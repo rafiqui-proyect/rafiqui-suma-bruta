@@ -153,6 +153,18 @@ function openLeafKeypad(plantIndex, col) {
     // Open sheet
     document.getElementById("leaf-keypad-sheet").classList.add("open");
     document.getElementById("candela-keypad-sheet").classList.remove("open");
+
+    // Expand view padding and scroll row to center
+    const viewContainer = document.getElementById("view-toma-datos");
+    if (viewContainer) {
+        viewContainer.classList.add("keyboard-active");
+    }
+    setTimeout(() => {
+        const activeRow = document.getElementById(`plant-row-${plantIndex}`);
+        if (activeRow) {
+            activeRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, 80);
 }
 
 // Keypad Actions: Candela (Brun Scale)
@@ -168,6 +180,18 @@ function openCandelaKeypad(plantIndex, col) {
     
     document.getElementById("candela-keypad-sheet").classList.add("open");
     document.getElementById("leaf-keypad-sheet").classList.remove("open");
+
+    // Expand view padding and scroll row to center
+    const viewContainer = document.getElementById("view-toma-datos");
+    if (viewContainer) {
+        viewContainer.classList.add("keyboard-active");
+    }
+    setTimeout(() => {
+        const activeRow = document.getElementById(`plant-row-${plantIndex}`);
+        if (activeRow) {
+            activeRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, 80);
 }
 
 function closeKeypad() {
@@ -175,6 +199,12 @@ function closeKeypad() {
     document.getElementById("leaf-keypad-sheet").classList.remove("open");
     document.getElementById("candela-keypad-sheet").classList.remove("open");
     activeCell = null;
+
+    // Reset view padding
+    const viewContainer = document.getElementById("view-toma-datos");
+    if (viewContainer) {
+        viewContainer.classList.remove("keyboard-active");
+    }
 }
 
 function clearActiveHighlight() {
