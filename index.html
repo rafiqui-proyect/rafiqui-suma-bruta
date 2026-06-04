@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Muestreo Suma Bruta | Rafiqui Pro</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Suma Bruta">
+    <link rel="apple-touch-icon" href="icon.png">
+    <link rel="stylesheet" href="style.css">
+    <!-- Chart.js loaded for the trend graphic, cached locally by PWA if offline -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Supabase JS Library -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header>
+            <div class="brand">RAFIQUI<span>SB</span></div>
+            <div id="sync-status" class="sync-status-badge offline" onclick="triggerManualSync()">
+                <span class="status-dot">●</span>
+                <span id="sync-status-text">Sin Sincronizar (Offline)</span>
+            </div>
+        </header>
+
+        <!-- View 1: Toma de Datos -->
+        <div id="view-toma-datos" class="tab-content active">
+            <!-- Summary Card -->
+            <div id="sb-summary-card" class="summary-kpi low">
+                <div class="summary-info">
+                    <h3>Suma Bruta Promedio</h3>
+                    <div id="avg-sb-value" class="summary-val">0.0</div>
+                </div>
+                <div class="summary-details">
+                    <span id="sb-status-badge" class="status-indicator" style="background: rgba(0, 255, 170, 0.15); color: var(--green);">Baja Presión</span>
+                    <span id="leaves-average-text" style="font-size: 0.75rem; color: var(--text-dim);">Hojas Prom: 0.0</span>
+                </div>
+            </div>
+
+            <!-- Leaf 2 / 3 Young Leaves Warning Card -->
+            <div id="h3-summary-card" class="h3-kpi low">
+                <div class="h3-summary-info">
+                    <h3>Alerta Hojas Jóvenes</h3>
+                    <div id="h3-status-text" class="h3-status-val">OK</div>
+                </div>
+                <div class="h3-summary-details">
+                    <span id="h3-incidence-text" style="font-size: 0.8rem; font-weight: 600;">Incidencia H3: 0%</span>
+                    <span id="h3-severity-text" style="font-size: 0.7rem; color: var(--text-dim);">Severidad H3: 0.0</span>
+                </div>
+            </div>
+
+            <!-- Finca and Lote Settings -->
+            <div class="card">
+                <div class="panel-title">Configuración del Lote</div>
+                <div class="form-grid">
+                    <div class="input-group">
+                        <label for="input-finca">Finca</label>
+                        <select id="input-finca" class="input-field" style="background-color: #0c0c1b; border: 1px solid var(--border-glass);">
+                            <option value="Finca Santa Elena">Finca Santa Elena</option>
+                            <option value="Finca La Esperanza">Finca La Esperanza</option>
+                            <option value="Finca San José">Finca San José</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label for="input-lote">Lote</label>
+                        <input type="text" id="input-lote" class="input-field" value="Lote 4B">
+                    </div>
+                    <div class="input-group">
+                        <label for="input-evaluador">Evaluador</label>
+                        <input type="text" id="input-evaluador" class="input-field" value="Agr. Rafik">
+                    </div>
+                    <div class="input-group">
+                        <label for="input-station-id">Código Cliente</label>
+                        <input type="text" id="input-station-id" class="input-field" placeholder="DEMO-123" readonly>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Plant Table -->
+            <div class="card" style="padding: 15px 10px;">
+                <div class="panel-title" style="padding-left: 10px;">Muestreo de Plantas</div>
+                <div class="table-wrapper">
+                    <!-- Column Headers -->
+                    <div class="table-header-grid">
+                        <div>Pl.</div>
+                        <div>H. II</div>
+                        <div>H. III</div>
+                        <div>H. IV</div>
+                        <div>H. V</div>
+                        <div>Cand.</div>
+                        <div>SB</div>
+                    </div>
+
+                    <!-- Rows Container -->
+                    <div id="plant-rows-container" style="display: flex; flex-direction: column; gap: 8px;">
+                        <!-- Generated Dynamically by JS -->
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px;">
+                    <button class="btn-primary" onclick="saveCurrentMuestreo()">
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                            <path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/>
+                        </svg>
+                        Guardar Muestreo Local
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- View 2: Historial -->
+        <div id="view-historial" class="tab-content">
+            <div class="panel-title">Muestreos Guardados</div>
+            <div id="history-container" class="history-list">
+                <!-- Generated Dynamically by JS -->
+            </div>
+        </div>
+
+        <!-- View 3: Gráficos -->
+        <div id="view-graficos" class="tab-content">
+            <div class="panel-title">Evolución de Sigatoka Negra</div>
+            <div class="card" style="padding: 15px;">
+                <canvas id="trend-chart" style="width: 100%; height: 260px;"></canvas>
+            </div>
+            
+            <div class="card" style="padding: 15px; margin-top: 15px;">
+                <div class="panel-title" style="margin-bottom: 8px;">Guía de Control (Suma Bruta y Hojas Jóvenes)</div>
+                <div style="font-size: 0.8rem; color: var(--text-dim); display: flex; flex-direction: column; gap: 12px;">
+                    <div>
+                        <strong style="color: var(--cyan); display: block; margin-bottom: 6px; font-size: 0.85rem;">Suma Bruta Promedio (Lote):</strong>
+                        <div style="display: flex; flex-direction: column; gap: 6px; padding-left: 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="display: inline-block; width: 10px; height: 10px; background: var(--green); border-radius: 50%;"></span>
+                                <span>SB < 5.0: Baja presión. Monitoreo regular.</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="display: inline-block; width: 10px; height: 10px; background: var(--yellow); border-radius: 50%;"></span>
+                                <span>SB 5.0 - 8.0: Presión media. Deshoje sanitario.</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="display: inline-block; width: 10px; height: 10px; background: var(--red); border-radius: 50%;"></span>
+                                <span>SB > 8.0: Presión crítica. Programar fumigación.</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <strong style="color: var(--cyan); display: block; margin-bottom: 6px; font-size: 0.85rem;">Alerta Temprana (Hojas II / III):</strong>
+                        <div style="display: flex; flex-direction: column; gap: 6px; padding-left: 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="display: inline-block; width: 10px; height: 10px; background: #d09cff; border-radius: 50%;"></span>
+                                <span>CRÍTICO H-II: Síntomas activos en Hoja II en cualquier planta.</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="display: inline-block; width: 10px; height: 10px; background: var(--red); border-radius: 50%;"></span>
+                                <span>DISPARO H-III: Severidad promedio de Hoja III >= 1.5.</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="display: inline-block; width: 10px; height: 10px; background: var(--yellow); border-radius: 50%;"></span>
+                                <span>PREAVISO H-III: Incidencia en Hoja III >= 10% (o quema/necrosis en H3).</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Navigation Bar -->
+        <div class="tab-bar">
+            <button class="tab-btn active" onclick="switchView('toma-datos', this)">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0 4H7v-2h10v2zm0-8H7V7h10v2z"/>
+                </svg>
+                Toma Datos
+            </button>
+            <button class="tab-btn" onclick="switchView('historial', this)">
+                <svg viewBox="0 0 24 24">
+                    <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/>
+                </svg>
+                Historial
+            </button>
+            <button class="tab-btn" onclick="switchView('graficos', this)">
+                <svg viewBox="0 0 24 24">
+                    <path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6.2-6.2 4 4 6.3-6.29L22 12V6z"/>
+                </svg>
+                Gráficos
+            </button>
+        </div>
+
+        <!-- Bottom Sheet: Leaf Keypad (Estadio + Densidad) -->
+        <div id="leaf-keypad-sheet" class="bottom-sheet">
+            <div class="sheet-header">
+                <span id="leaf-keypad-title" class="sheet-title">Planta X - Hoja Y</span>
+                <span class="sheet-close" onclick="closeKeypad()">&times;</span>
+            </div>
+            <div class="grid-keypad">
+                <!-- Healthy Stage -->
+                <button class="key-btn sana" onclick="inputSymptom('0')">0 (Sana)</button>
+                
+                <!-- Stages 1 to 5 with +/- -->
+                <button class="key-btn" onclick="inputSymptom('1-')">1-</button>
+                <button class="key-btn" onclick="inputSymptom('1+')">1+</button>
+                <button class="key-btn" style="visibility: hidden;"></button> <!-- Spacer -->
+                
+                <button class="key-btn" onclick="inputSymptom('2-')">2-</button>
+                <button class="key-btn" onclick="inputSymptom('2+')">2+</button>
+                <button class="key-btn" style="visibility: hidden;"></button> <!-- Spacer -->
+                
+                <button class="key-btn" onclick="inputSymptom('3-')">3-</button>
+                <button class="key-btn" onclick="inputSymptom('3+')">3+</button>
+                <button class="key-btn" style="visibility: hidden;"></button> <!-- Spacer -->
+                
+                <button class="key-btn" onclick="inputSymptom('4-')">4-</button>
+                <button class="key-btn" onclick="inputSymptom('4+')">4+</button>
+                <button class="key-btn" style="visibility: hidden;"></button> <!-- Spacer -->
+                
+                <button class="key-btn" onclick="inputSymptom('5-')">5-</button>
+                <button class="key-btn" onclick="inputSymptom('5+')">5+</button>
+                <button class="key-btn" style="visibility: hidden;"></button> <!-- Spacer -->
+            </div>
+        </div>
+
+        <!-- Bottom Sheet: Candela Keypad (Brun Scale) -->
+        <div id="candela-keypad-sheet" class="bottom-sheet">
+            <div class="sheet-header">
+                <span id="candela-keypad-title" class="sheet-title">Planta X - Hoja Candela</span>
+                <span class="sheet-close" onclick="closeKeypad()">&times;</span>
+            </div>
+            <div class="grid-keypad">
+                <button class="key-btn" onclick="inputCandela('0.0')">0.0 (Cerrado)</button>
+                <button class="key-btn" onclick="inputCandela('0.2')">0.2 (Cuello)</button>
+                <button class="key-btn" onclick="inputCandela('0.4')">0.4 (Ápice)</button>
+                <button class="key-btn" onclick="inputCandela('0.6')">0.6 (Embudo)</button>
+                <button class="key-btn" onclick="inputCandela('0.8')">0.8 (Abierto)</button>
+                <button class="key-btn" onclick="inputCandela('1.0')">1.0 (Hoja 1)</button>
+            </div>
+        </div>
+
+        <!-- Details Modal Overlay -->
+        <div id="details-modal" class="modal-overlay" onclick="closeDetailsModal(event)">
+            <div class="modal-card">
+                <span class="sheet-close" style="position: absolute; top: 15px; right: 20px;" onclick="closeDetailsModal(null)">&times;</span>
+                <h3 id="modal-lote-title" style="margin-bottom: 5px; font-size: 1.2rem;">Lote 4B</h3>
+                <p id="modal-date" style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 20px;">Fecha: 03/06/2026</p>
+                
+                <div class="summary-kpi low" id="modal-kpi-card" style="padding: 15px; margin-bottom: 15px;">
+                    <div class="summary-info">
+                        <h3 style="font-size: 0.7rem;">Suma Bruta Promedio</h3>
+                        <div id="modal-sb-val" style="font-size: 2rem; font-weight: 800;">3.8</div>
+                    </div>
+                    <div class="summary-details">
+                        <span id="modal-status" class="status-indicator">Bajo</span>
+                    </div>
+                </div>
+
+                <div class="h3-kpi low" id="modal-h3-card" style="padding: 12px 18px; margin-bottom: 20px;">
+                    <div class="h3-summary-info">
+                        <h3 style="font-size: 0.7rem;">Alerta Hojas Jóvenes</h3>
+                        <div id="modal-h3-status" style="font-size: 1.1rem; font-weight: 800;">OK</div>
+                    </div>
+                    <div class="h3-summary-details">
+                        <span id="modal-h3-incidence" style="font-size: 0.75rem; font-weight: 600;">Incidencia H3: 0%</span>
+                        <span id="modal-h3-severity" style="font-size: 0.65rem; color: var(--text-dim);">Severidad H3: 0.0</span>
+                    </div>
+                </div>
+
+                <div class="panel-title" style="margin-bottom: 10px;">Detalle por Planta</div>
+                <div style="display: flex; flex-direction: column; gap: 8px;" id="modal-details-table">
+                    <!-- Loaded dynamically -->
+                </div>
+
+                <div style="margin-top: 25px; display: flex; gap: 10px;">
+                    <button class="btn-primary" style="flex: 1; background: var(--red); color: white;" onclick="deleteCurrentMuestreo()">Eliminar Registro</button>
+                    <button class="btn-secondary" style="flex: 1;" onclick="closeDetailsModal(null)">Cerrar</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>
