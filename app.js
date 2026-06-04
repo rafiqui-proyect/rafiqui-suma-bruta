@@ -55,6 +55,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Load Charts tab if selected
     renderTrendChart();
+
+    // Register Service Worker for PWA offline capability
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('./sw.js')
+            .then(reg => console.log('Service Worker registered successfully:', reg.scope))
+            .catch(err => console.error('Service Worker registration failed:', err));
+    }
 });
 
 // Network status indicators
