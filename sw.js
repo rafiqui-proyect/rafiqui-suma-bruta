@@ -1,11 +1,13 @@
-const CACHE_NAME = 'suma-bruta-v2';
+const CACHE_NAME = 'suma-bruta-v3';
 const ASSETS = [
   './',
   './index.html',
   './style.css',
   './app.js',
   './manifest.json',
-  './icon.png'
+  './icon.png',
+  './icon_192.png',
+  './icon_512.png'
 ];
 
 self.addEventListener('install', event => {
