@@ -2,11 +2,11 @@
   "id": "com.rafiqui.sumabruta",
   "short_name": "Suma Bruta",
   "name": "Rafiqui Muestreo - Suma Bruta",
-  "description": "Aplicación táctil para el muestreo de Suma Bruta de Sigatoka Negra en banano.",
+  "description": "Aplicacion tactil para el muestreo de Suma Bruta de Sigatoka Negra en banano.",
   "lang": "es",
   "dir": "ltr",
   "scope": "/muestreo-suma-bruta/",
-  "start_url": "/muestreo-suma-bruta/indice.html",
+  "start_url": "/muestreo-suma-bruta/index.html",
   "background_color": "#070712",
   "theme_color": "#00f2ff",
   "display": "standalone",
@@ -14,19 +14,19 @@
   "categories": ["productivity", "agriculture", "utilities"],
   "icons": [
     {
-      "src": "icono_192.png",
+      "src": "icon_192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "icono_512.png",
+      "src": "icon_512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "icono_512.png",
+      "src": "icon_512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
@@ -34,7 +34,7 @@
   ],
   "screenshots": [
     {
-      "src": "icono_512.png",
+      "src": "icon_512.png",
       "sizes": "512x512",
       "type": "image/png",
       "form_factor": "narrow",
