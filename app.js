@@ -2547,12 +2547,26 @@ async function generatePDFReport() {
         tableRowsHTML = `<tr><td colspan="7" style="padding: 12px; color: #888;">No hay muestreos recientes cargados en la tabla de cálculos.</td></tr>`;
     }
 
+    // Create a 1x1 hidden wrapper that stays inside the DOM visible coordinates to prevent blank rendering in html2canvas
+    const pdfWrapper = document.createElement("div");
+    pdfWrapper.id = "pdf-wrapper-container";
+    pdfWrapper.style.position = "fixed";
+    pdfWrapper.style.left = "0";
+    pdfWrapper.style.top = "0";
+    pdfWrapper.style.width = "1px";
+    pdfWrapper.style.height = "1px";
+    pdfWrapper.style.overflow = "hidden";
+    pdfWrapper.style.zIndex = "-9999";
+    pdfWrapper.style.pointerEvents = "none";
+
     const reportContainer = document.createElement("div");
     reportContainer.id = "pdf-report-container";
-    reportContainer.style.position = "absolute";
-    reportContainer.style.left = "-9999px";
-    reportContainer.style.top = "-9999px";
     reportContainer.style.width = "750px";
+    reportContainer.style.background = "#ffffff";
+    reportContainer.style.color = "#212529";
+    reportContainer.style.position = "relative";
+    reportContainer.style.left = "0";
+    reportContainer.style.top = "0";
 
     reportContainer.innerHTML = `
         <div style="padding: 30px; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #212529; background: #ffffff; line-height: 1.5;">
@@ -2651,7 +2665,8 @@ async function generatePDFReport() {
         </div>
     `;
 
-    document.body.appendChild(reportContainer);
+    pdfWrapper.appendChild(reportContainer);
+    document.body.appendChild(pdfWrapper);
 
     const opt = {
         margin:       [10, 10, 10, 10],
@@ -2689,6 +2704,8 @@ async function generatePDFReport() {
             console.error("Fallback save failed too:", e);
         }
     } finally {
-        document.body.removeChild(reportContainer);
+        if (pdfWrapper.parentNode) {
+            document.body.removeChild(pdfWrapper);
+        }
     }
 }
