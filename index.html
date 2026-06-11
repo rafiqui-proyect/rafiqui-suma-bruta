@@ -14,6 +14,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Supabase JS Library -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- html2pdf.js for client-side PDF generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body>
 
@@ -40,19 +42,6 @@
                     <span id="leaves-average-text" style="font-size: 0.75rem; color: var(--text-dim);">Hojas Prom: 0.0</span>
                 </div>
             </div>
-
-            <!-- Leaf 2 / 3 Young Leaves Warning Card -->
-            <div id="h3-summary-card" class="h3-kpi low">
-                <div class="h3-summary-info">
-                    <h3>Alerta Hojas Jóvenes</h3>
-                    <div id="h3-status-text" class="h3-status-val">OK</div>
-                </div>
-                <div class="h3-summary-details">
-                    <span id="h3-incidence-text" style="font-size: 0.8rem; font-weight: 600;">Incidencia H3: 0%</span>
-                    <span id="h3-severity-text" style="font-size: 0.7rem; color: var(--text-dim);">Severidad H3: 0.0</span>
-                </div>
-            </div>
-
             <!-- Finca and Lote Settings -->
             <div class="card">
                 <div class="panel-title">Configuración del Lote</div>
@@ -77,6 +66,18 @@
                         <label for="input-station-id">Código Cliente</label>
                         <input type="text" id="input-station-id" class="input-field" placeholder="DEMO-123" readonly>
                     </div>
+                    <div class="input-group">
+                        <label for="select-role">Rol de Usuario</label>
+                        <select id="select-role" class="input-field" onchange="handleRoleChange()" style="background-color: #0c0c1b; border: 1px solid var(--border-glass);">
+                            <option value="evaluador">Evaluador (Campo)</option>
+                            <option value="ingeniero">Ingeniero (Supervisor)</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="change-pass-container" style="display: none; margin-top: 12px; padding: 0 4px;">
+                    <button class="btn-secondary" onclick="changeEngineerPassword()" style="font-size: 0.78rem; padding: 8px 12px; height: 34px; border-radius: 10px; width: 100%; justify-content: center; background: rgba(255, 255, 255, 0.03);">
+                        🔑 Cambiar Clave de Supervisor
+                    </button>
                 </div>
             </div>
 
@@ -87,12 +88,11 @@
                     <!-- Column Headers -->
                     <div class="table-header-grid">
                         <div>Pl.</div>
-                        <div>H. II</div>
-                        <div>H. III</div>
-                        <div>H. IV</div>
-                        <div>H. V</div>
+                        <div>EE</div>
+                        <div>COE</div>
                         <div>Cand.</div>
-                        <div>SB</div>
+                        <div>HT</div>
+                        <div>H+VLE</div>
                     </div>
 
                     <!-- Rows Container -->
@@ -112,9 +112,100 @@
             </div>
         </div>
 
+        <!-- View 1.5: Sanidad (Matas Paridas y Semana 7) -->
+        <div id="view-sanidad" class="tab-content">
+            <!-- Stage Selector Buttons -->
+            <div style="display: flex; gap: 8px; margin-bottom: 15px;">
+                <button id="btn-stage-rp" class="btn-primary" style="flex: 1; font-size: 0.8rem; padding: 10px 5px; height: 38px; border-radius: 10px;" onclick="switchSanidadStage('rp')">Recién Parida (RP)</button>
+                <button id="btn-stage-s7" class="btn-secondary" style="flex: 1; font-size: 0.8rem; padding: 10px 5px; height: 38px; border-radius: 10px;" onclick="switchSanidadStage('s7')">Semana 7 (S7)</button>
+                <button id="btn-stage-s11" class="btn-secondary" style="flex: 1; font-size: 0.8rem; padding: 10px 5px; height: 38px; border-radius: 10px;" onclick="switchSanidadStage('s11')">Semana 11 (S11)</button>
+            </div>
+
+            <!-- Summary KPI Card for Sanidad -->
+            <div id="sanidad-summary-card" class="summary-kpi low" style="margin-bottom: 15px; padding: 12px 15px;">
+                <div class="summary-info">
+                    <h3 id="sanidad-summary-title" style="font-size: 0.75rem;">Sanidad RP (Promedios)</h3>
+                    <div id="avg-sanidad-ht" class="summary-val" style="font-size: 1.1rem; font-weight: bold; margin-top: 5px; color: var(--cyan);">HT: 0.0</div>
+                </div>
+                <div class="summary-details" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; font-size: 0.72rem; color: var(--text-dim); text-align: left; width: 100%; border-left: 1px solid var(--border-glass); padding-left: 10px; margin-left: 10px;">
+                    <div id="avg-sanidad-hvle">H+VLE: 0.0</div>
+                    <div id="avg-sanidad-hvlq-low">H+VLQ <5%: 0.0</div>
+                    <div id="avg-sanidad-hvlq-high">H+VLQ >5%: 0.0</div>
+                    <div id="avg-sanidad-hvlc">H+VLC: 0.0</div>
+                </div>
+            </div>
+
+            <!-- Sanidad RP Grid -->
+            <div id="sanidad-rp-container" class="card" style="padding: 15px 10px;">
+                <div class="panel-title" style="padding-left: 10px; margin-bottom: 10px;">Muestreo Sanidad RP</div>
+                <div class="table-wrapper" style="overflow-x: auto;">
+                    <div class="table-header-grid" style="grid-template-columns: 0.6fr repeat(5, 1fr); min-width: 400px; padding: 6px 4px;">
+                        <div>Pl.</div>
+                        <div>HT</div>
+                        <div>H+VLE</div>
+                        <div>H+VLQ&lt;5%</div>
+                        <div>H+VLQ&gt;5%</div>
+                        <div>H+VLC</div>
+                    </div>
+                    <div id="sanidad-rows-container" style="display: flex; flex-direction: column; gap: 8px; min-width: 400px;">
+                        <!-- Generated Dynamically by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sanidad S7 Grid -->
+            <div id="sanidad-s7-container" class="card" style="padding: 15px 10px; display: none;">
+                <div class="panel-title" style="padding-left: 10px; margin-bottom: 10px;">Muestreo Sanidad S7</div>
+                <div class="table-wrapper" style="overflow-x: auto;">
+                    <div class="table-header-grid" style="grid-template-columns: 0.6fr repeat(5, 1fr); min-width: 400px; padding: 6px 4px;">
+                        <div>Pl.</div>
+                        <div>HT</div>
+                        <div>H+VLE</div>
+                        <div>H+VLQ&lt;5%</div>
+                        <div>H+VLQ&gt;5%</div>
+                        <div>H+VLC</div>
+                    </div>
+                    <div id="sanidad-s7-rows-container" style="display: flex; flex-direction: column; gap: 8px; min-width: 400px;">
+                        <!-- Generated Dynamically by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sanidad S11 Grid -->
+            <div id="sanidad-s11-container" class="card" style="padding: 15px 10px; display: none;">
+                <div class="panel-title" style="padding-left: 10px; margin-bottom: 10px;">Muestreo Sanidad S11</div>
+                <div class="table-wrapper" style="overflow-x: auto;">
+                    <div class="table-header-grid" style="grid-template-columns: 0.6fr repeat(5, 1fr); min-width: 400px; padding: 6px 4px;">
+                        <div>Pl.</div>
+                        <div>HT</div>
+                        <div>H+VLE</div>
+                        <div>H+VLQ&lt;5%</div>
+                        <div>H+VLQ&gt;5%</div>
+                        <div>H+VLC</div>
+                    </div>
+                    <div id="sanidad-s11-rows-container" style="display: flex; flex-direction: column; gap: 8px; min-width: 400px;">
+                        <!-- Generated Dynamically by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top: 10px; margin-bottom: 15px; color: var(--text-dim); font-size: 0.72rem; text-align: center;">
+                *Los datos de Sanidad se guardan integrados con el Muestreo de Suma Bruta actual.
+            </div>
+        </div>
+
         <!-- View 2: Historial -->
         <div id="view-historial" class="tab-content">
             <div class="panel-title">Muestreos Guardados</div>
+            <!-- Engineer Filters for Historial -->
+            <div id="historial-filters" style="display: none; gap: 8px; margin-bottom: 15px;">
+                <select id="hist-filter-finca" class="input-field" onchange="applyEngineerFilters('hist')" style="flex: 1; font-size: 0.75rem; padding: 6px; height: 34px; background-color: #0c0c1b; border: 1px solid var(--border-glass);">
+                    <option value="all">Todas las Fincas</option>
+                </select>
+                <select id="hist-filter-lote" class="input-field" onchange="applyEngineerFilters('hist')" style="flex: 1; font-size: 0.75rem; padding: 6px; height: 34px; background-color: #0c0c1b; border: 1px solid var(--border-glass);">
+                    <option value="all">Todos los Lotes</option>
+                </select>
+            </div>
             <div id="history-container" class="history-list">
                 <!-- Generated Dynamically by JS -->
             </div>
@@ -122,9 +213,86 @@
 
         <!-- View 3: Gráficos -->
         <div id="view-graficos" class="tab-content">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding: 0 4px;">
+                <div class="panel-title" style="margin: 0; font-size: 1.1rem;">Gráficas de Campo</div>
+                <button class="btn-primary" style="font-size: 0.8rem; padding: 8px 12px; height: 34px; border-radius: 10px; margin: 0; width: auto; font-weight: 600;" onclick="generatePDFReport()">
+                    📄 Reporte PDF
+                </button>
+            </div>
+            <!-- Engineer Filters for Charts -->
+            <div id="graficos-filters" style="display: none; gap: 8px; margin-bottom: 15px; padding: 0 4px;">
+                <select id="chart-filter-finca" class="input-field" onchange="applyEngineerFilters('chart')" style="flex: 1; font-size: 0.75rem; padding: 6px; height: 34px; background-color: #0c0c1b; border: 1px solid var(--border-glass);">
+                    <option value="all">Todas las Fincas</option>
+                </select>
+                <select id="chart-filter-lote" class="input-field" onchange="applyEngineerFilters('chart')" style="flex: 1; font-size: 0.75rem; padding: 6px; height: 34px; background-color: #0c0c1b; border: 1px solid var(--border-glass);">
+                    <option value="all">Todos los Lotes</option>
+                </select>
+            </div>
+
             <div class="panel-title">Evolución de Sigatoka Negra</div>
+            <div class="card" style="padding: 15px; margin-bottom: 20px;">
+                <div class="chart-container">
+                    <canvas id="trend-chart"></canvas>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 12px;">
+                    <button class="btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 6px; height: 30px; border-radius: 8px; margin: 0; background: rgba(255,255,255,0.02);" onclick="downloadChartAsImage('trend-chart', 'Evolucion_Sigatoka_Negra')">📥 Guardar PNG</button>
+                    <button class="btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 6px; height: 30px; border-radius: 8px; margin: 0; background: rgba(255,255,255,0.02); border-color: rgba(0, 255, 170, 0.2); color: var(--green);" onclick="shareChartAsImage('trend-chart', 'Evolucion_Sigatoka_Negra')">🔗 Compartir</button>
+                </div>
+            </div>
+
+            <div class="panel-title" style="margin-top: 15px;">Evolución Sanidad RP</div>
+            <div class="card" style="padding: 15px; margin-bottom: 20px;">
+                <div class="chart-container">
+                    <canvas id="sanidad-trend-chart"></canvas>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 12px;">
+                    <button class="btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 6px; height: 30px; border-radius: 8px; margin: 0; background: rgba(255,255,255,0.02);" onclick="downloadChartAsImage('sanidad-trend-chart', 'Evolucion_Sanidad_RP')">📥 Guardar PNG</button>
+                    <button class="btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 6px; height: 30px; border-radius: 8px; margin: 0; background: rgba(255,255,255,0.02); border-color: rgba(0, 255, 170, 0.2); color: var(--green);" onclick="shareChartAsImage('sanidad-trend-chart', 'Evolucion_Sanidad_RP')">🔗 Compartir</button>
+                </div>
+            </div>
+
+            <div class="panel-title" style="margin-top: 15px;">Evolución Sanidad S7</div>
+            <div class="card" style="padding: 15px; margin-bottom: 20px;">
+                <div class="chart-container">
+                    <canvas id="sanidad-s7-trend-chart"></canvas>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 12px;">
+                    <button class="btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 6px; height: 30px; border-radius: 8px; margin: 0; background: rgba(255,255,255,0.02);" onclick="downloadChartAsImage('sanidad-s7-trend-chart', 'Evolucion_Sanidad_S7')">📥 Guardar PNG</button>
+                    <button class="btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 6px; height: 30px; border-radius: 8px; margin: 0; background: rgba(255,255,255,0.02); border-color: rgba(0, 255, 170, 0.2); color: var(--green);" onclick="shareChartAsImage('sanidad-s7-trend-chart', 'Evolucion_Sanidad_S7')">🔗 Compartir</button>
+                </div>
+            </div>
+
+            <div class="panel-title" style="margin-top: 15px;">Evolución Sanidad S11</div>
+            <div class="card" style="padding: 15px; margin-bottom: 20px;">
+                <div class="chart-container">
+                    <canvas id="sanidad-s11-trend-chart"></canvas>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 12px;">
+                    <button class="btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 6px; height: 30px; border-radius: 8px; margin: 0; background: rgba(255,255,255,0.02);" onclick="downloadChartAsImage('sanidad-s11-trend-chart', 'Evolucion_Sanidad_S11')">📥 Guardar PNG</button>
+                    <button class="btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 6px; height: 30px; border-radius: 8px; margin: 0; background: rgba(255,255,255,0.02); border-color: rgba(0, 255, 170, 0.2); color: var(--green);" onclick="shareChartAsImage('sanidad-s11-trend-chart', 'Evolucion_Sanidad_S11')">🔗 Compartir</button>
+                </div>
+            </div>
+
+            <!-- Detalle de Origen de Gráfica (Fórmulas y Cálculos V2) -->
             <div class="card" style="padding: 15px;">
-                <canvas id="trend-chart" style="width: 100%; height: 260px;"></canvas>
+                <div class="panel-title" style="margin-bottom: 8px;">Tabla de Referencia de Cálculos (Lote Activo)</div>
+                <div class="table-wrapper" style="margin-top: 5px;">
+                    <!-- Visual Replica Headers matching the photo -->
+                    <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-size: 0.72rem; font-weight: bold; border-bottom: 1.5px solid var(--border-glass); padding-bottom: 4px; color: var(--text-dim);">
+                        <div>Planta</div>
+                        <div>EE</div>
+                        <div>COE</div>
+                        <div>Cand.</div>
+                        <div>COE-Cand.</div>
+                        <div>HT</div>
+                        <div>H+VLE</div>
+                    </div>
+                    
+                    <!-- Table Body with replica values from user photo (Populated Dynamically by app.js) -->
+                    <div id="calc-reference-table-body" style="display: flex; flex-direction: column; font-size: 0.72rem; font-family: 'JetBrains Mono', monospace; text-align: center; margin-top: 4px; gap: 4px;">
+                        <!-- Generated Dynamically -->
+                    </div>
+                </div>
             </div>
 
             <!-- Registro de Aplicaciones de Productos -->
@@ -158,43 +326,22 @@
             </div>
             
             <div class="card" style="padding: 15px; margin-top: 15px;">
-                <div class="panel-title" style="margin-bottom: 8px;">Guía de Control (Suma Bruta y Hojas Jóvenes)</div>
+                <div class="panel-title" style="margin-bottom: 8px;">Guía de Control (Suma Bruta y Hojas)</div>
                 <div style="font-size: 0.8rem; color: var(--text-dim); display: flex; flex-direction: column; gap: 12px;">
                     <div>
                         <strong style="color: var(--cyan); display: block; margin-bottom: 6px; font-size: 0.85rem;">Suma Bruta Promedio (Lote):</strong>
                         <div style="display: flex; flex-direction: column; gap: 6px; padding-left: 8px;">
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="display: inline-block; width: 10px; height: 10px; background: var(--green); border-radius: 50%;"></span>
-                                <span>SB < 5.0: Baja presión. Monitoreo regular.</span>
+                                <span>SB < 500: Baja presión. Monitoreo regular.</span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="display: inline-block; width: 10px; height: 10px; background: var(--yellow); border-radius: 50%;"></span>
-                                <span>SB 5.0 - 8.0: Presión media. Deshoje sanitario.</span>
+                                <span>SB 500 - 800: Presión media. Deshoje sanitario.</span>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="display: inline-block; width: 10px; height: 10px; background: var(--red); border-radius: 50%;"></span>
-                                <span>SB > 8.0: Presión crítica. Programar fumigación.</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div>
-                        <strong style="color: var(--cyan); display: block; margin-bottom: 6px; font-size: 0.85rem;">Alerta Temprana (Hojas II / III / IV):</strong>
-                        <div style="display: flex; flex-direction: column; gap: 6px; padding-left: 8px;">
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="display: inline-block; width: 10px; height: 10px; background: #d09cff; border-radius: 50%;"></span>
-                                <span>CRÍTICO H-II: Cualquier síntoma activo en Hoja II.</span>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="display: inline-block; width: 10px; height: 10px; background: var(--red); border-radius: 50%;"></span>
-                                <span>DISPARO H-III: Cualquier síntoma activo en Hoja III.</span>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="display: inline-block; width: 10px; height: 10px; background: var(--red); border-radius: 50%;"></span>
-                                <span>DISPARO H-IV: Síntoma de grado 2+ o superior en Hoja IV.</span>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="display: inline-block; width: 10px; height: 10px; background: var(--yellow); border-radius: 50%;"></span>
-                                <span>PREAVISO H-IV: Síntomas leves (1-, 1+, 2-) en Hoja IV.</span>
+                                <span>SB > 800: Presión crítica. Programar fumigación.</span>
                             </div>
                         </div>
                     </div>
@@ -208,7 +355,13 @@
                 <svg viewBox="0 0 24 24">
                     <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0 4H7v-2h10v2zm0-8H7V7h10v2z"/>
                 </svg>
-                Toma Datos
+                Suma Bruta
+            </button>
+            <button class="tab-btn" onclick="switchView('sanidad', this)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 20px; height: 20px; display: block; margin: 0 auto 3px;">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+                Sanidad
             </button>
             <button class="tab-btn" onclick="switchView('historial', this)">
                 <svg viewBox="0 0 24 24">
@@ -224,45 +377,59 @@
             </button>
         </div>
 
-        <!-- Bottom Sheet: Leaf Keypad (Estadio + Densidad) -->
-        <div id="leaf-keypad-sheet" class="bottom-sheet">
+        <!-- Bottom Sheet: EE Keypad -->
+        <div id="ee-keypad-sheet" class="bottom-sheet">
             <div class="sheet-header">
-                <span id="leaf-keypad-title" class="sheet-title">Planta X - Hoja Y</span>
+                <span id="ee-keypad-title" class="sheet-title">Planta X - Estadio de Infección (EE)</span>
                 <span class="sheet-close" onclick="closeKeypad()">&times;</span>
             </div>
-            <div class="grid-keypad" style="grid-template-columns: repeat(4, 1fr);">
-                <!-- Healthy Stage -->
-                <button class="key-btn sana" style="grid-column: span 4;" onclick="inputSymptom('0')">0 (Sana)</button>
-                
-                <!-- Stages 1 to 5 in 4 columns -->
-                <button class="key-btn" onclick="inputSymptom('1-')">1-</button>
-                <button class="key-btn" onclick="inputSymptom('1+')">1+</button>
-                <button class="key-btn" onclick="inputSymptom('2-')">2-</button>
-                <button class="key-btn" onclick="inputSymptom('2+')">2+</button>
-                
-                <button class="key-btn" onclick="inputSymptom('3-')">3-</button>
-                <button class="key-btn" onclick="inputSymptom('3+')">3+</button>
-                <button class="key-btn" onclick="inputSymptom('4-')">4-</button>
-                <button class="key-btn" onclick="inputSymptom('4+')">4+</button>
-                
-                <button class="key-btn" style="grid-column: span 2;" onclick="inputSymptom('5-')">5-</button>
-                <button class="key-btn" style="grid-column: span 2;" onclick="inputSymptom('5+')">5+</button>
+            <div class="grid-keypad" style="grid-template-columns: repeat(3, 1fr);">
+                <button class="key-btn" onclick="inputEE('-1')">-1</button>
+                <button class="key-btn" onclick="inputEE('-2')">-2</button>
+                <button class="key-btn" onclick="inputEE('-3')">-3</button>
+                <button class="key-btn" onclick="inputEE('1')">1</button>
+                <button class="key-btn" onclick="inputEE('2')">2</button>
+                <button class="key-btn" onclick="inputEE('3')">3</button>
+                <button class="key-btn sana" style="grid-column: span 3; background: rgba(0, 255, 170, 0.08); color: var(--green); border-color: rgba(0, 255, 170, 0.2);" onclick="inputEE('0')">0 (Sana)</button>
             </div>
         </div>
 
-        <!-- Bottom Sheet: Candela Keypad (Brun Scale) -->
+        <!-- Bottom Sheet: Candela Keypad -->
         <div id="candela-keypad-sheet" class="bottom-sheet">
             <div class="sheet-header">
-                <span id="candela-keypad-title" class="sheet-title">Planta X - Hoja Candela</span>
+                <span id="candela-keypad-title" class="sheet-title">Planta X - Cigarro (Candela)</span>
                 <span class="sheet-close" onclick="closeKeypad()">&times;</span>
             </div>
-            <div class="grid-keypad">
-                <button class="key-btn" onclick="inputCandela('0.0')">0.0 (Cerrado)</button>
-                <button class="key-btn" onclick="inputCandela('0.2')">0.2 (Cuello)</button>
-                <button class="key-btn" onclick="inputCandela('0.4')">0.4 (Ápice)</button>
-                <button class="key-btn" onclick="inputCandela('0.6')">0.6 (Embudo)</button>
-                <button class="key-btn" onclick="inputCandela('0.8')">0.8 (Abierto)</button>
-                <button class="key-btn" onclick="inputCandela('1.0')">1.0 (Hoja 1)</button>
+            <div class="grid-keypad" style="grid-template-columns: repeat(5, 1fr);">
+                <button class="key-btn" onclick="inputCandela('0.0')">0.0</button>
+                <button class="key-btn" onclick="inputCandela('0.2')">0.2</button>
+                <button class="key-btn" onclick="inputCandela('0.4')">0.4</button>
+                <button class="key-btn" onclick="inputCandela('0.6')">0.6</button>
+                <button class="key-btn" onclick="inputCandela('0.8')">0.8</button>
+            </div>
+        </div>
+
+        <!-- Bottom Sheet: Numeric Keypad -->
+        <div id="numeric-keypad-sheet" class="bottom-sheet">
+            <div class="sheet-header">
+                <span id="numeric-keypad-title" class="sheet-title">Planta X - Valor</span>
+                <span class="sheet-close" onclick="closeKeypad()">&times;</span>
+            </div>
+            <div class="grid-keypad" style="grid-template-columns: repeat(4, 1fr);">
+                <button class="key-btn" onclick="inputNumeric(4)">4</button>
+                <button class="key-btn" onclick="inputNumeric(5)">5</button>
+                <button class="key-btn" onclick="inputNumeric(6)">6</button>
+                <button class="key-btn" onclick="inputNumeric(7)">7</button>
+                <button class="key-btn" onclick="inputNumeric(8)">8</button>
+                <button class="key-btn" onclick="inputNumeric(9)">9</button>
+                <button class="key-btn" onclick="inputNumeric(10)">10</button>
+                <button class="key-btn" onclick="inputNumeric(11)">11</button>
+                <button class="key-btn" onclick="inputNumeric(12)">12</button>
+                <button class="key-btn" onclick="inputNumeric(13)">13</button>
+                <button class="key-btn" onclick="inputNumeric(14)">14</button>
+                <button class="key-btn" onclick="inputNumeric(15)">15</button>
+                <button class="key-btn" style="grid-column: span 2;" onclick="inputNumericPrompt()">Otro...</button>
+                <button class="key-btn" style="grid-column: span 2;" onclick="inputNumeric(0)">0 (N/A)</button>
             </div>
         </div>
 
@@ -282,20 +449,23 @@
                         <span id="modal-status" class="status-indicator">Bajo</span>
                     </div>
                 </div>
-
-                <div class="h3-kpi low" id="modal-h3-card" style="padding: 12px 18px; margin-bottom: 20px;">
-                    <div class="h3-summary-info">
-                        <h3 style="font-size: 0.7rem;">Alerta Hojas Jóvenes</h3>
-                        <div id="modal-h3-status" style="font-size: 1.1rem; font-weight: 800;">OK</div>
-                    </div>
-                    <div class="h3-summary-details">
-                        <span id="modal-h3-incidence" style="font-size: 0.75rem; font-weight: 600;">Incidencia H3: 0%</span>
-                        <span id="modal-h3-severity" style="font-size: 0.65rem; color: var(--text-dim);">Severidad H3: 0.0</span>
-                    </div>
+                <div class="panel-title" style="margin-bottom: 10px;">Detalle por Planta (Suma Bruta)</div>
+                <div style="display: flex; flex-direction: column; gap: 8px;" id="modal-details-table">
+                    <!-- Loaded dynamically -->
+                </div>
+                
+                <div class="panel-title" style="margin-top: 15px; margin-bottom: 5px;" id="modal-sanidad-title">Detalle Sanidad RP</div>
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px;" id="modal-sanidad-table">
+                    <!-- Loaded dynamically -->
+                </div>
+                
+                <div class="panel-title" style="margin-top: 10px; margin-bottom: 5px;" id="modal-sanidad-s7-title">Detalle Sanidad S7</div>
+                <div style="display: flex; flex-direction: column; gap: 8px;" id="modal-sanidad-s7-table">
+                    <!-- Loaded dynamically -->
                 </div>
 
-                <div class="panel-title" style="margin-bottom: 10px;">Detalle por Planta</div>
-                <div style="display: flex; flex-direction: column; gap: 8px;" id="modal-details-table">
+                <div class="panel-title" style="margin-top: 10px; margin-bottom: 5px;" id="modal-sanidad-s11-title">Detalle Sanidad S11</div>
+                <div style="display: flex; flex-direction: column; gap: 8px;" id="modal-sanidad-s11-table">
                     <!-- Loaded dynamically -->
                 </div>
 

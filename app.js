@@ -1,5 +1,5 @@
 /* ==========================================
-   LOGIC ENGINE: MUESTREO SIGATOKA NEGRA
+   LOGIC ENGINE: MUESTREO SIGATOKA NEGRA V2
    Progressive Web App Logic
    Persistence: Offline-First / Supabase Sync
    ========================================== */
@@ -9,33 +9,39 @@ const SUPABASE_URL = "https://pknnmsslbfjmnsxteylf.supabase.co";
 const SUPABASE_KEY = "sb_publishable_d4L3CpfSvcMdDUeYGAEChg_7kJgWlxV";
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Coefficient matrix: Estadio + Densidad
+// Coefficient matrix: EE -> COE mapping for Plantas Jóvenes (V2)
 const COEFFICIENTS = {
     '0': 0.0,
-    '1-': 1.0,
-    '1+': 2.0,
-    '2-': 3.0,
-    '2+': 4.0,
-    '3-': 5.0,
-    '3+': 6.0,
-    '4-': 10.0,
-    '4+': 15.0,
-    '5-': 20.0,
-    '5+': 30.0
+    '-1': 40.0,
+    '1': 60.0,
+    '-2': 80.0,
+    '2': 100.0,
+    '-3': 120.0,
+    '3': 140.0
 };
 
 // State Variables
 let plantData = [];
-let activeCell = null; // { plantIndex, col }
+let sanidadData = [];
+let sanidadS7Data = [];
+let sanidadS11Data = [];
+let currentSanidadStage = 'rp'; // 'rp', 's7', or 's11'
+const sanidadCols = ['ht', 'hvle', 'hvlq_low', 'hvlq_high', 'hvlc'];
+let activeCell = null; // { plantIndex, col, isSanidad, stage }
 let isOnline = false;
 let historyData = [];
+let userRole = "evaluador";
+let globalHistoryData = [];
 let trendChartInstance = null;
+let sanidadChartInstance = null;
+let sanidadS7ChartInstance = null;
+let sanidadS11ChartInstance = null;
 let currentDetailIndex = null; // For modal view/delete
 let applicationsData = []; // Product applications logs
 
 // Config Defaults
-const TOTAL_PLANTS = 10;
-const cols = ['h2', 'h3', 'h4', 'h5', 'candela'];
+const TOTAL_PLANTS = 5;
+const cols = ['ee', 'candela', 'ht', 'hvle'];
 
 // Initialization
 document.addEventListener("DOMContentLoaded", () => {
@@ -43,8 +49,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const client_id = localStorage.getItem('rafiqui_client_id') || "DEMO-123";
     document.getElementById("input-station-id").value = client_id;
 
-    // Load History from localStorage
+    // Load History
     loadHistory();
+
+    // If engineer, fetch global history from Supabase if online
+    if (userRole === "ingeniero" && navigator.onLine) {
+        fetchGlobalHistoryFromSupabase();
+    }
 
     // Load Product Applications
     loadApplications();
@@ -63,15 +74,38 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Initialize Blank Grid
     initBlankGrid();
+    initBlankSanidadGrid();
 
     // Load Charts tab if selected
     renderTrendChart();
+    renderSanidadTrendChart();
+    renderSanidadS7TrendChart();
+    renderSanidadS11TrendChart();
 
     // Register Service Worker for PWA offline capability
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('./sw.js')
-            .then(reg => console.log('Service Worker registered successfully:', reg.scope))
+            .then(reg => {
+                console.log('Service Worker registered successfully:', reg.scope);
+                
+                reg.addEventListener('updatefound', () => {
+                    const newWorker = reg.installing;
+                    newWorker.addEventListener('statechange', () => {
+                        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                            console.log('Nueva versión instalada. Activando...');
+                        }
+                    });
+                });
+            })
             .catch(err => console.error('Service Worker registration failed:', err));
+
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (!refreshing) {
+                refreshing = true;
+                window.location.reload();
+            }
+        });
     }
 });
 
@@ -88,6 +122,11 @@ function updateNetworkStatus() {
         
         // Auto sync if there are unsynced items
         autoSyncUnsynced();
+
+        // If engineer, fetch global history
+        if (userRole === "ingeniero") {
+            fetchGlobalHistoryFromSupabase();
+        }
     } else {
         badge.classList.remove("online");
         badge.classList.add("offline");
@@ -95,7 +134,7 @@ function updateNetworkStatus() {
     }
 }
 
-// Generate the 10 rows in the data entry table
+// Generate the 5 rows in the data entry table for V2
 function initBlankGrid() {
     const container = document.getElementById("plant-rows-container");
     container.innerHTML = "";
@@ -104,12 +143,12 @@ function initBlankGrid() {
     for (let i = 0; i < TOTAL_PLANTS; i++) {
         plantData.push({
             num: i + 1,
-            h2: "",
-            h3: "",
-            h4: "",
-            h5: "",
+            ee: "",
+            coe: "",
             candela: "",
-            sb: 0.0
+            coe_cand: "",
+            ht: "",
+            hvle: ""
         });
 
         const row = document.createElement("div");
@@ -117,17 +156,201 @@ function initBlankGrid() {
         row.id = `plant-row-${i}`;
         row.innerHTML = `
             <div class="plant-num">${i + 1}</div>
-            <div class="input-cell" id="cell-${i}-h2" onclick="openLeafKeypad(${i}, 'h2')">-</div>
-            <div class="input-cell" id="cell-${i}-h3" onclick="openLeafKeypad(${i}, 'h3')">-</div>
-            <div class="input-cell" id="cell-${i}-h4" onclick="openLeafKeypad(${i}, 'h4')">-</div>
-            <div class="input-cell" id="cell-${i}-h5" onclick="openLeafKeypad(${i}, 'h5')">-</div>
-            <div class="input-cell candela" id="cell-${i}-candela" onclick="openCandelaKeypad(${i}, 'candela')">-</div>
-            <div class="sb-cell" id="sb-${i}">0.0</div>
+            <div class="input-cell" id="cell-${i}-ee" onclick="openEEKeypad(${i})">-</div>
+            <div class="input-cell" id="cell-${i}-coe" style="background: rgba(255,255,255,0.01); color: var(--text-dim); cursor: default;">-</div>
+            <div class="input-cell candela" id="cell-${i}-candela" onclick="openCandelaKeypad(${i})">-</div>
+            <div class="input-cell" id="cell-${i}-ht" onclick="openNumericKeypad(${i}, 'ht')">-</div>
+            <div class="input-cell" id="cell-${i}-hvle" onclick="openNumericKeypad(${i}, 'hvle')">-</div>
         `;
         container.appendChild(row);
     }
     
     calculateTotals();
+}
+
+// Generate the 5 rows in the sanidad table for V2, S7 and S11
+function initBlankSanidadGrid() {
+    const container = document.getElementById("sanidad-rows-container");
+    const containerS7 = document.getElementById("sanidad-s7-rows-container");
+    const containerS11 = document.getElementById("sanidad-s11-rows-container");
+    if (!container || !containerS7 || !containerS11) return;
+
+    container.innerHTML = "";
+    containerS7.innerHTML = "";
+    containerS11.innerHTML = "";
+    sanidadData = [];
+    sanidadS7Data = [];
+    sanidadS11Data = [];
+
+    for (let i = 0; i < TOTAL_PLANTS; i++) {
+        // RP Data
+        sanidadData.push({
+            num: i + 1,
+            ht: "",
+            hvle: "",
+            hvlq_low: "",
+            hvlq_high: "",
+            hvlc: ""
+        });
+
+        const row = document.createElement("div");
+        row.className = "table-row-grid";
+        row.id = `sanidad-row-${i}`;
+        row.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+        row.style.padding = "6px 4px";
+        row.innerHTML = `
+            <div class="plant-num">${i + 1}</div>
+            <div class="input-cell" id="sanidad-cell-${i}-ht" onclick="openSanidadNumericKeypad(${i}, 'ht')">-</div>
+            <div class="input-cell" id="sanidad-cell-${i}-hvle" onclick="openSanidadNumericKeypad(${i}, 'hvle')">-</div>
+            <div class="input-cell" id="sanidad-cell-${i}-hvlq_low" onclick="openSanidadNumericKeypad(${i}, 'hvlq_low')">-</div>
+            <div class="input-cell" id="sanidad-cell-${i}-hvlq_high" onclick="openSanidadNumericKeypad(${i}, 'hvlq_high')">-</div>
+            <div class="input-cell" id="sanidad-cell-${i}-hvlc" onclick="openSanidadNumericKeypad(${i}, 'hvlc')">-</div>
+        `;
+        container.appendChild(row);
+
+        // S7 Data
+        sanidadS7Data.push({
+            num: i + 1,
+            ht: "",
+            hvle: "",
+            hvlq_low: "",
+            hvlq_high: "",
+            hvlc: ""
+        });
+
+        const rowS7 = document.createElement("div");
+        rowS7.className = "table-row-grid";
+        rowS7.id = `sanidad-s7-row-${i}`;
+        rowS7.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+        rowS7.style.padding = "6px 4px";
+        rowS7.innerHTML = `
+            <div class="plant-num">${i + 1}</div>
+            <div class="input-cell" id="sanidad-s7-cell-${i}-ht" onclick="openSanidadNumericKeypad(${i}, 'ht')">-</div>
+            <div class="input-cell" id="sanidad-s7-cell-${i}-hvle" onclick="openSanidadNumericKeypad(${i}, 'hvle')">-</div>
+            <div class="input-cell" id="sanidad-s7-cell-${i}-hvlq_low" onclick="openSanidadNumericKeypad(${i}, 'hvlq_low')">-</div>
+            <div class="input-cell" id="sanidad-s7-cell-${i}-hvlq_high" onclick="openSanidadNumericKeypad(${i}, 'hvlq_high')">-</div>
+            <div class="input-cell" id="sanidad-s7-cell-${i}-hvlc" onclick="openSanidadNumericKeypad(${i}, 'hvlc')">-</div>
+        `;
+        containerS7.appendChild(rowS7);
+
+        // S11 Data
+        sanidadS11Data.push({
+            num: i + 1,
+            ht: "",
+            hvle: "",
+            hvlq_low: "",
+            hvlq_high: "",
+            hvlc: ""
+        });
+
+        const rowS11 = document.createElement("div");
+        rowS11.className = "table-row-grid";
+        rowS11.id = `sanidad-s11-row-${i}`;
+        rowS11.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+        rowS11.style.padding = "6px 4px";
+        rowS11.innerHTML = `
+            <div class="plant-num">${i + 1}</div>
+            <div class="input-cell" id="sanidad-s11-cell-${i}-ht" onclick="openSanidadNumericKeypad(${i}, 'ht')">-</div>
+            <div class="input-cell" id="sanidad-s11-cell-${i}-hvle" onclick="openSanidadNumericKeypad(${i}, 'hvle')">-</div>
+            <div class="input-cell" id="sanidad-s11-cell-${i}-hvlq_low" onclick="openSanidadNumericKeypad(${i}, 'hvlq_low')">-</div>
+            <div class="input-cell" id="sanidad-s11-cell-${i}-hvlq_high" onclick="openSanidadNumericKeypad(${i}, 'hvlq_high')">-</div>
+            <div class="input-cell" id="sanidad-s11-cell-${i}-hvlc" onclick="openSanidadNumericKeypad(${i}, 'hvlc')">-</div>
+        `;
+        containerS11.appendChild(rowS11);
+    }
+    
+    // Default switch to RP stage
+    switchSanidadStage('rp');
+}
+
+function switchSanidadStage(stage) {
+    currentSanidadStage = stage;
+    const btnRP = document.getElementById("btn-stage-rp");
+    const btnS7 = document.getElementById("btn-stage-s7");
+    const btnS11 = document.getElementById("btn-stage-s11");
+    const containerRP = document.getElementById("sanidad-rp-container");
+    const containerS7 = document.getElementById("sanidad-s7-container");
+    const containerS11 = document.getElementById("sanidad-s11-container");
+    const summaryTitle = document.getElementById("sanidad-summary-title");
+
+    // Reset all buttons and containers
+    btnRP.className = "btn-secondary";
+    btnS7.className = "btn-secondary";
+    btnS11.className = "btn-secondary";
+    containerRP.style.display = "none";
+    containerS7.style.display = "none";
+    containerS11.style.display = "none";
+
+    if (stage === 'rp') {
+        btnRP.className = "btn-primary";
+        containerRP.style.display = "block";
+        summaryTitle.innerText = "Sanidad RP (Promedios)";
+    } else if (stage === 's7') {
+        btnS7.className = "btn-primary";
+        containerS7.style.display = "block";
+        summaryTitle.innerText = "Sanidad S7 (Promedios)";
+    } else if (stage === 's11') {
+        btnS11.className = "btn-primary";
+        containerS11.style.display = "block";
+        summaryTitle.innerText = "Sanidad S11 (Promedios)";
+    }
+
+    calculateSanidadTotals();
+}
+
+function calculateSanidadTotals() {
+    let dataToUse = currentSanidadStage === 'rp' ? sanidadData : (currentSanidadStage === 's7' ? sanidadS7Data : sanidadS11Data);
+
+    let totalHT = 0, countHT = 0;
+    let totalHVLE = 0, countHVLE = 0;
+    let totalHVLQ_low = 0, countHVLQ_low = 0;
+    let totalHVLQ_high = 0, countHVLQ_high = 0;
+    let totalHVLC = 0, countHVLC = 0;
+
+    dataToUse.forEach(row => {
+        if (row.ht !== "" && row.ht !== undefined && row.ht !== null) {
+            totalHT += parseInt(row.ht);
+            countHT++;
+        }
+        if (row.hvle !== "" && row.hvle !== undefined && row.hvle !== null) {
+            totalHVLE += parseInt(row.hvle);
+            countHVLE++;
+        }
+        if (row.hvlq_low !== "" && row.hvlq_low !== undefined && row.hvlq_low !== null) {
+            totalHVLQ_low += parseInt(row.hvlq_low);
+            countHVLQ_low++;
+        }
+        if (row.hvlq_high !== "" && row.hvlq_high !== undefined && row.hvlq_high !== null) {
+            totalHVLQ_high += parseInt(row.hvlq_high);
+            countHVLQ_high++;
+        }
+        if (row.hvlc !== "" && row.hvlc !== undefined && row.hvlc !== null) {
+            totalHVLC += parseInt(row.hvlc);
+            countHVLC++;
+        }
+    });
+
+    const avgHT = countHT > 0 ? (totalHT / countHT) : 0.0;
+    const avgHVLE = countHVLE > 0 ? (totalHVLE / countHVLE) : 0.0;
+    const avgHVLQ_low = countHVLQ_low > 0 ? (totalHVLQ_low / countHVLQ_low) : 0.0;
+    const avgHVLQ_high = countHVLQ_high > 0 ? (totalHVLQ_high / countHVLQ_high) : 0.0;
+    const avgHVLC = countHVLC > 0 ? (totalHVLC / countHVLC) : 0.0;
+
+    // Update UI elements
+    const htEl = document.getElementById("avg-sanidad-ht");
+    if (htEl) htEl.innerText = `HT: ${avgHT.toFixed(1)}`;
+
+    const hvleEl = document.getElementById("avg-sanidad-hvle");
+    if (hvleEl) hvleEl.innerText = `H+VLE: ${avgHVLE.toFixed(1)}`;
+
+    const hvlqLowEl = document.getElementById("avg-sanidad-hvlq-low");
+    if (hvlqLowEl) hvlqLowEl.innerText = `H+VLQ <5%: ${avgHVLQ_low.toFixed(1)}`;
+
+    const hvlqHighEl = document.getElementById("avg-sanidad-hvlq-high");
+    if (hvlqHighEl) hvlqHighEl.innerText = `H+VLQ >5%: ${avgHVLQ_high.toFixed(1)}`;
+
+    const hvlcEl = document.getElementById("avg-sanidad-hvlc");
+    if (hvlcEl) hvlcEl.innerText = `H+VLC: ${avgHVLC.toFixed(1)}`;
 }
 
 // Switch Views (Tabs)
@@ -141,57 +364,237 @@ function switchView(viewName, btnElement) {
 
     if (viewName === 'graficos') {
         renderTrendChart();
+        renderSanidadTrendChart();
+        renderSanidadS7TrendChart();
+        renderSanidadS11TrendChart();
+        // Load calculations table reference
+        updateReferenceTableOnTabChange();
     } else if (viewName === 'historial') {
         renderHistoryList();
     }
 }
 
-// Keypad Actions: Leaf Symptoms (II, III, IV)
-function openLeafKeypad(plantIndex, col) {
-    const prevPlantIndex = activeCell ? activeCell.plantIndex : null;
+// Dynamically updates the reference table with the latest saved record or the active sheet data
+function updateReferenceTableOnTabChange() {
+    if (historyData && historyData.length > 0) {
+        // Use the latest saved sampling (historyData[0])
+        const item = historyData[0];
+        const plants = item.detalles_json.plants;
+        
+        let totalCoeCand = 0.0;
+        let countCoeCand = 0;
+        let totalHT = 0;
+        let countHT = 0;
+        let totalHvle = 0;
+        let countHvle = 0;
 
-    // Clear active selections
+        plants.forEach(p => {
+            if (p.coe_cand !== "" && p.coe_cand !== undefined && p.coe_cand !== null) {
+                totalCoeCand += parseFloat(p.coe_cand);
+                countCoeCand++;
+            }
+            if (p.ht !== "" && p.ht !== undefined && p.ht !== null) {
+                totalHT += parseInt(p.ht);
+                countHT++;
+            }
+            if (p.hvle !== "" && p.hvle !== undefined && p.hvle !== null) {
+                totalHvle += parseInt(p.hvle);
+                countHvle++;
+            }
+        });
+
+        const avgCoeCand = countCoeCand > 0 ? (totalCoeCand / countCoeCand) : 0.0;
+        const sumaBruta = avgCoeCand * 10;
+        const avgHT = countHT > 0 ? (totalHT / countHT) : 0.0;
+        const avgHvle = countHvle > 0 ? (totalHvle / countHvle) : 0.0;
+
+        // Temporarily swap plantData to draw the history item rows
+        const activePlantDataBackup = plantData;
+        plantData = plants;
+        renderCalcReferenceTable(totalCoeCand, totalHT, totalHvle, avgCoeCand, sumaBruta, avgHT, avgHvle);
+        plantData = activePlantDataBackup;
+    } else {
+        // Fallback to active empty/active sheet calculation totals
+        calculateTotals();
+    }
+}
+
+// Dynamically updates the reference table using a specific history item index
+function updateReferenceTableForIndex(index) {
+    if (historyData && historyData[index]) {
+        const item = historyData[index];
+        const plants = item.detalles_json.plants;
+        
+        let totalCoeCand = 0.0;
+        let countCoeCand = 0;
+        let totalHT = 0;
+        let countHT = 0;
+        let totalHvle = 0;
+        let countHvle = 0;
+
+        plants.forEach(p => {
+            if (p.coe_cand !== "" && p.coe_cand !== undefined && p.coe_cand !== null) {
+                totalCoeCand += parseFloat(p.coe_cand);
+                countCoeCand++;
+            }
+            if (p.ht !== "" && p.ht !== undefined && p.ht !== null) {
+                totalHT += parseInt(p.ht);
+                countHT++;
+            }
+            if (p.hvle !== "" && p.hvle !== undefined && p.hvle !== null) {
+                totalHvle += parseInt(p.hvle);
+                countHvle++;
+            }
+        });
+
+        const avgCoeCand = countCoeCand > 0 ? (totalCoeCand / countCoeCand) : 0.0;
+        const sumaBruta = avgCoeCand * 10;
+        const avgHT = countHT > 0 ? (totalHT / countHT) : 0.0;
+        const avgHvle = countHvle > 0 ? (totalHvle / countHvle) : 0.0;
+
+        const activePlantDataBackup = plantData;
+        plantData = plants;
+        renderCalcReferenceTable(totalCoeCand, totalHT, totalHvle, avgCoeCand, sumaBruta, avgHT, avgHvle);
+        plantData = activePlantDataBackup;
+        
+        // Also update the Title of the Reference Card to show the selected point's Lote and Date
+        const refTitle = document.querySelector(".panel-title[style*='margin-bottom: 8px']");
+        if (refTitle) {
+            const dateObj = new Date(item.created_at);
+            refTitle.innerText = `Tabla de Cálculos: ${item.lote} (${dateObj.getDate()}/${dateObj.getMonth()+1})`;
+        }
+    }
+}
+
+// Open EE Keypad Bottom Sheet
+function openEEKeypad(plantIndex) {
+    const prevPlantIndex = activeCell ? activeCell.plantIndex : null;
     clearActiveHighlight();
+    activeCell = { plantIndex, col: 'ee' };
     
-    activeCell = { plantIndex, col };
+    document.getElementById(`plant-row-${plantIndex}`).classList.add("active-row");
+    document.getElementById(`cell-${plantIndex}-ee`).classList.add("active-cell");
+
+    document.getElementById("ee-keypad-title").innerText = `Planta ${plantIndex + 1} - Estadio de Infección (EE)`;
     
-    // Highlight Row and Cell
+    closeAllSheets();
+    document.getElementById("ee-keypad-sheet").classList.add("open");
+    adjustViewPadding(plantIndex, "ee-keypad-sheet");
+    scrollIntoViewWithDelay(plantIndex, prevPlantIndex);
+}
+
+// Open Candela Keypad Bottom Sheet
+function openCandelaKeypad(plantIndex) {
+    const prevPlantIndex = activeCell ? activeCell.plantIndex : null;
+    clearActiveHighlight();
+    activeCell = { plantIndex, col: 'candela' };
+    
+    document.getElementById(`plant-row-${plantIndex}`).classList.add("active-row");
+    document.getElementById(`cell-${plantIndex}-candela`).classList.add("active-cell");
+
+    document.getElementById("candela-keypad-title").innerText = `Planta ${plantIndex + 1} - Apertura Cigarro`;
+    
+    closeAllSheets();
+    document.getElementById("candela-keypad-sheet").classList.add("open");
+    adjustViewPadding(plantIndex, "candela-keypad-sheet");
+    scrollIntoViewWithDelay(plantIndex, prevPlantIndex);
+}
+
+// Open Numeric Keypad Bottom Sheet (HT and H+VLE)
+function openNumericKeypad(plantIndex, col) {
+    const prevPlantIndex = activeCell ? activeCell.plantIndex : null;
+    clearActiveHighlight();
+    activeCell = { plantIndex, col, isSanidad: false };
+    
     document.getElementById(`plant-row-${plantIndex}`).classList.add("active-row");
     document.getElementById(`cell-${plantIndex}-${col}`).classList.add("active-cell");
 
-    // Update bottom sheet title
-    const leafName = col === 'h2' ? 'Hoja II' : col === 'h3' ? 'Hoja III' : col === 'h4' ? 'Hoja IV' : 'Hoja V';
-    document.getElementById("leaf-keypad-title").innerText = `Planta ${plantIndex + 1} - ${leafName}`;
+    const labelName = col === 'ht' ? 'Hojas Totales (HT)' : 'Vieja Libre Estrías (H+VLE)';
+    document.getElementById("numeric-keypad-title").innerText = `Planta ${plantIndex + 1} - ${labelName}`;
     
-    // Open sheet
-    document.getElementById("leaf-keypad-sheet").classList.add("open");
+    closeAllSheets();
+    document.getElementById("numeric-keypad-sheet").classList.add("open");
+    adjustViewPadding(plantIndex, "numeric-keypad-sheet");
+    scrollIntoViewWithDelay(plantIndex, prevPlantIndex);
+}
+
+// Open Sanidad Numeric Keypad
+function openSanidadNumericKeypad(plantIndex, col) {
+    const prevPlantIndex = activeCell ? activeCell.plantIndex : null;
+    clearActiveHighlight();
+    activeCell = { plantIndex, col, isSanidad: true, stage: currentSanidadStage };
+    
+    const stagePrefix = currentSanidadStage === 's7' ? 'sanidad-s7' : (currentSanidadStage === 's11' ? 'sanidad-s11' : 'sanidad');
+    const rowId = `${stagePrefix}-row-${plantIndex}`;
+    const cellId = `${stagePrefix}-cell-${plantIndex}-${col}`;
+
+    const rowEl = document.getElementById(rowId);
+    const cellEl = document.getElementById(cellId);
+
+    if (rowEl) rowEl.classList.add("active-row");
+    if (cellEl) cellEl.classList.add("active-cell");
+
+    let labelName = "";
+    if (col === 'ht') labelName = 'Hojas Totales (HT)';
+    else if (col === 'hvle') labelName = 'Libre Estrías (H+VLE)';
+    else if (col === 'hvlq_low') labelName = 'Libre Quema <5%';
+    else if (col === 'hvlq_high') labelName = 'Libre Quema >5%';
+    else if (col === 'hvlc') labelName = 'Libre Cirugía (H+VLC)';
+
+    document.getElementById("numeric-keypad-title").innerText = `Planta ${plantIndex + 1} - ${labelName}`;
+    
+    closeAllSheets();
+    document.getElementById("numeric-keypad-sheet").classList.add("open");
+    adjustViewPaddingForSanidad(plantIndex, "numeric-keypad-sheet");
+    scrollIntoViewWithDelayForSanidad(plantIndex, prevPlantIndex);
+}
+
+function closeAllSheets() {
+    document.getElementById("ee-keypad-sheet").classList.remove("open");
     document.getElementById("candela-keypad-sheet").classList.remove("open");
+    document.getElementById("numeric-keypad-sheet").classList.remove("open");
+}
 
-    // Toggle position classes
+function adjustViewPadding(plantIndex, sheetId) {
     const viewContainer = document.getElementById("view-toma-datos");
-    const leafSheet = document.getElementById("leaf-keypad-sheet");
-    const candelaSheet = document.getElementById("candela-keypad-sheet");
+    const sheet = document.getElementById(sheetId);
     
-    const isKeyboardAlreadyActive = viewContainer && (viewContainer.classList.contains("keyboard-top-active") || viewContainer.classList.contains("keyboard-bottom-active"));
-
-    if (plantIndex >= 5) {
-        leafSheet.classList.add("keyboard-top");
-        candelaSheet.classList.add("keyboard-top");
+    if (plantIndex >= 3) {
+        sheet.classList.add("keyboard-top");
         if (viewContainer) {
             viewContainer.classList.remove("keyboard-bottom-active");
             viewContainer.classList.add("keyboard-top-active");
         }
     } else {
-        leafSheet.classList.remove("keyboard-top");
-        candelaSheet.classList.remove("keyboard-top");
+        sheet.classList.remove("keyboard-top");
         if (viewContainer) {
             viewContainer.classList.remove("keyboard-top-active");
             viewContainer.classList.add("keyboard-bottom-active");
         }
     }
+}
+
+function adjustViewPaddingForSanidad(plantIndex, sheetId) {
+    const viewContainer = document.getElementById("view-sanidad");
+    const sheet = document.getElementById(sheetId);
     
-    const shouldScroll = !isKeyboardAlreadyActive || prevPlantIndex !== plantIndex;
-    if (shouldScroll) {
+    if (plantIndex >= 3) {
+        sheet.classList.add("keyboard-top");
+        if (viewContainer) {
+            viewContainer.classList.remove("keyboard-bottom-active");
+            viewContainer.classList.add("keyboard-top-active");
+        }
+    } else {
+        sheet.classList.remove("keyboard-top");
+        if (viewContainer) {
+            viewContainer.classList.remove("keyboard-top-active");
+            viewContainer.classList.add("keyboard-bottom-active");
+        }
+    }
+}
+
+function scrollIntoViewWithDelay(plantIndex, prevPlantIndex) {
+    if (prevPlantIndex !== plantIndex) {
         setTimeout(() => {
             const activeRow = document.getElementById(`plant-row-${plantIndex}`);
             if (activeRow) {
@@ -201,49 +604,12 @@ function openLeafKeypad(plantIndex, col) {
     }
 }
 
-// Keypad Actions: Candela (Brun Scale)
-function openCandelaKeypad(plantIndex, col) {
-    const prevPlantIndex = activeCell ? activeCell.plantIndex : null;
-
-    clearActiveHighlight();
-    
-    activeCell = { plantIndex, col };
-    
-    document.getElementById(`plant-row-${plantIndex}`).classList.add("active-row");
-    document.getElementById(`cell-${plantIndex}-${col}`).classList.add("active-cell");
-
-    document.getElementById("candela-keypad-title").innerText = `Planta ${plantIndex + 1} - Estado Cigarro`;
-    
-    document.getElementById("candela-keypad-sheet").classList.add("open");
-    document.getElementById("leaf-keypad-sheet").classList.remove("open");
-
-    // Toggle position classes
-    const viewContainer = document.getElementById("view-toma-datos");
-    const leafSheet = document.getElementById("leaf-keypad-sheet");
-    const candelaSheet = document.getElementById("candela-keypad-sheet");
-    
-    const isKeyboardAlreadyActive = viewContainer && (viewContainer.classList.contains("keyboard-top-active") || viewContainer.classList.contains("keyboard-bottom-active"));
-
-    if (plantIndex >= 5) {
-        leafSheet.classList.add("keyboard-top");
-        candelaSheet.classList.add("keyboard-top");
-        if (viewContainer) {
-            viewContainer.classList.remove("keyboard-bottom-active");
-            viewContainer.classList.add("keyboard-top-active");
-        }
-    } else {
-        leafSheet.classList.remove("keyboard-top");
-        candelaSheet.classList.remove("keyboard-top");
-        if (viewContainer) {
-            viewContainer.classList.remove("keyboard-top-active");
-            viewContainer.classList.add("keyboard-bottom-active");
-        }
-    }
-    
-    const shouldScroll = !isKeyboardAlreadyActive || prevPlantIndex !== plantIndex;
-    if (shouldScroll) {
+function scrollIntoViewWithDelayForSanidad(plantIndex, prevPlantIndex) {
+    if (prevPlantIndex !== plantIndex) {
         setTimeout(() => {
-            const activeRow = document.getElementById(`plant-row-${plantIndex}`);
+            const stagePrefix = currentSanidadStage === 's7' ? 'sanidad-s7' : (currentSanidadStage === 's11' ? 'sanidad-s11' : 'sanidad');
+            const rowId = `${stagePrefix}-row-${plantIndex}`;
+            const activeRow = document.getElementById(rowId);
             if (activeRow) {
                 activeRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }
@@ -253,20 +619,23 @@ function openCandelaKeypad(plantIndex, col) {
 
 function closeKeypad() {
     clearActiveHighlight();
-    document.getElementById("leaf-keypad-sheet").classList.remove("open");
-    document.getElementById("candela-keypad-sheet").classList.remove("open");
+    closeAllSheets();
     activeCell = null;
 
-    // Reset view padding
     const viewContainer = document.getElementById("view-toma-datos");
-    const leafSheet = document.getElementById("leaf-keypad-sheet");
-    const candelaSheet = document.getElementById("candela-keypad-sheet");
     if (viewContainer) {
         viewContainer.classList.remove("keyboard-bottom-active");
         viewContainer.classList.remove("keyboard-top-active");
     }
-    if (leafSheet) leafSheet.classList.remove("keyboard-top");
-    if (candelaSheet) candelaSheet.classList.remove("keyboard-top");
+    const viewContainerSanidad = document.getElementById("view-sanidad");
+    if (viewContainerSanidad) {
+        viewContainerSanidad.classList.remove("keyboard-bottom-active");
+        viewContainerSanidad.classList.remove("keyboard-top-active");
+    }
+    
+    document.getElementById("ee-keypad-sheet").classList.remove("keyboard-top");
+    document.getElementById("candela-keypad-sheet").classList.remove("keyboard-top");
+    document.getElementById("numeric-keypad-sheet").classList.remove("keyboard-top");
 }
 
 function clearActiveHighlight() {
@@ -274,233 +643,200 @@ function clearActiveHighlight() {
     document.querySelectorAll(".input-cell").forEach(cell => cell.classList.remove("active-cell"));
 }
 
-// Helper to determine symptom traffic-light class based on leaf column and value
-function getSymptomClassForLeaf(col, val) {
-    if (!val || val === '-' || val === '') return '';
-    if (val === '0') return 'symptom-low'; // Green
-    
-    if (col === 'h2' || col === 'h3') {
-        return 'symptom-high'; // Red (any symptom is high/critical on H2 and H3)
-    }
-    
-    if (col === 'h4') {
-        if (['2+', '3-', '3+', '4-', '4+', '5-', '5+'].includes(val)) {
-            return 'symptom-high'; // Red for 2+ or higher
-        }
-        return 'symptom-mid'; // Yellow for 1-, 1+, 2-
-    }
-    
-    if (col === 'h5') {
-        if (['3-', '3+', '4-', '4+', '5-', '5+'].includes(val)) {
-            return 'symptom-high'; // Red for 3- or higher
-        }
-        return 'symptom-mid'; // Yellow for 1- to 2+
-    }
-    
-    return '';
-}
-
-// Handle symptom input
-function inputSymptom(val) {
+// Input values handlers
+function inputEE(val) {
     if (!activeCell) return;
+    const { plantIndex } = activeCell;
     
-    const { plantIndex, col } = activeCell;
-    plantData[plantIndex][col] = val;
- 
-    // Update Cell Text and Class
-    const cellEl = document.getElementById(`cell-${plantIndex}-${col}`);
-    cellEl.innerText = val;
-    
-    // Clear old state classes and set new ones
-    cellEl.className = "input-cell has-val";
-    const colorClass = getSymptomClassForLeaf(col, val);
-    if (colorClass) {
-        cellEl.classList.add(colorClass);
-    }
+    plantData[plantIndex].ee = val;
+    const coe = COEFFICIENTS[val] || 0.0;
+    plantData[plantIndex].coe = coe;
 
-    // Calculate Suma Bruta for Row
+    // Update UI cells
+    const eeCell = document.getElementById(`cell-${plantIndex}-ee`);
+    eeCell.innerText = val;
+    eeCell.className = "input-cell has-val";
+
+    const coeCell = document.getElementById(`cell-${plantIndex}-coe`);
+    coeCell.innerText = coe;
+
     calculateRowSB(plantIndex);
-
-    // Auto Advance logic
     autoAdvance();
 }
 
-// Handle candela input
 function inputCandela(val) {
     if (!activeCell) return;
+    const { plantIndex } = activeCell;
     
-    const { plantIndex, col } = activeCell;
-    plantData[plantIndex][col] = val;
+    plantData[plantIndex].candela = val;
 
-    const cellEl = document.getElementById(`cell-${plantIndex}-${col}`);
-    cellEl.innerText = val;
-    cellEl.classList.add("has-val");
+    // Update UI cell
+    const candelaCell = document.getElementById(`cell-${plantIndex}-candela`);
+    candelaCell.innerText = val;
+    candelaCell.className = "input-cell candela has-val";
 
-    // Update total calculation (this doesn't affect SB but is saved)
-    calculateTotals();
-
+    calculateRowSB(plantIndex);
     autoAdvance();
 }
 
-// Automatic advance to the next field
+function inputNumeric(val) {
+    if (!activeCell) return;
+    const { plantIndex, col, isSanidad, stage } = activeCell;
+    
+    if (isSanidad) {
+        const dataToUse = stage === 's7' ? sanidadS7Data : (stage === 's11' ? sanidadS11Data : sanidadData);
+        const stagePrefix = stage === 's7' ? 'sanidad-s7' : (stage === 's11' ? 'sanidad-s11' : 'sanidad');
+        const cellId = `${stagePrefix}-cell-${plantIndex}-${col}`;
+        
+        dataToUse[plantIndex][col] = parseInt(val);
+        const cell = document.getElementById(cellId);
+        if (cell) {
+            cell.innerText = val;
+            cell.className = "input-cell has-val";
+        }
+        calculateSanidadTotals();
+    } else {
+        plantData[plantIndex][col] = parseInt(val);
+        const cell = document.getElementById(`cell-${plantIndex}-${col}`);
+        if (cell) {
+            cell.innerText = val;
+            cell.className = "input-cell has-val";
+        }
+        calculateTotals();
+    }
+    autoAdvance();
+}
+
+function inputNumericPrompt() {
+    if (!activeCell) return;
+    const { plantIndex, col, isSanidad, stage } = activeCell;
+    let promptLabel = "";
+    if (col === 'ht') promptLabel = 'Hojas Totales (HT)';
+    else if (col === 'hvle') promptLabel = 'Libre Estrías (H+VLE)';
+    else if (col === 'hvlq_low') promptLabel = 'Libre Quema <5%';
+    else if (col === 'hvlq_high') promptLabel = 'Libre Quema >5%';
+    else if (col === 'hvlc') promptLabel = 'Libre Cirugía (H+VLC)';
+    
+    const defaultVal = isSanidad ? 
+        (((stage === 's7' ? sanidadS7Data : (stage === 's11' ? sanidadS11Data : sanidadData))[plantIndex][col]) || "10") : 
+        (plantData[plantIndex][col] || "10");
+    
+    const res = prompt(`Introduce el valor para ${promptLabel}:`, defaultVal);
+    if (res !== null && !isNaN(res) && res.trim() !== "") {
+        inputNumeric(parseInt(res));
+    }
+}
+
+// Auto-advance through columns: ee -> candela -> ht -> hvle -> next row
 function autoAdvance() {
     if (!activeCell) return;
-    const { plantIndex, col } = activeCell;
-    const currentColIndex = cols.indexOf(col);
-
-    if (currentColIndex < cols.length - 1) {
-        // Advance to next column on same plant
-        const nextColName = cols[currentColIndex + 1];
-        if (nextColName === 'candela') {
-            openCandelaKeypad(plantIndex, nextColName);
+    const { plantIndex, col, isSanidad } = activeCell;
+    
+    if (isSanidad) {
+        const currentColIndex = sanidadCols.indexOf(col);
+        if (currentColIndex < sanidadCols.length - 1) {
+            // Advance to next column on same plant row
+            const nextCol = sanidadCols[currentColIndex + 1];
+            openSanidadNumericKeypad(plantIndex, nextCol);
         } else {
-            openLeafKeypad(plantIndex, nextColName);
+            // Advance to next plant
+            if (plantIndex < TOTAL_PLANTS - 1) {
+                openSanidadNumericKeypad(plantIndex + 1, sanidadCols[0]);
+            } else {
+                closeKeypad();
+            }
         }
     } else {
-        // Last column of row, advance to next plant row
-        if (plantIndex < TOTAL_PLANTS - 1) {
-            openLeafKeypad(plantIndex + 1, cols[0]);
+        const currentColIndex = cols.indexOf(col);
+        if (currentColIndex < cols.length - 1) {
+            // Advance to next column on same plant row
+            const nextCol = cols[currentColIndex + 1];
+            if (nextCol === 'candela') {
+                openCandelaKeypad(plantIndex);
+            } else {
+                openNumericKeypad(plantIndex, nextCol);
+            }
         } else {
-            // End of grid
-            closeKeypad();
+            // Advance to next plant
+            if (plantIndex < TOTAL_PLANTS - 1) {
+                openEEKeypad(plantIndex + 1);
+            } else {
+                closeKeypad();
+            }
         }
     }
 }
 
-// Calculate Suma Bruta of a single row
+// Calculate COE - Candela for row
 function calculateRowSB(plantIndex) {
     const row = plantData[plantIndex];
-    let sum = 0.0;
-    
-    // Add leaf II, III, IV, V if they have values
-    ['h2', 'h3', 'h4', 'h5'].forEach(col => {
-        const val = row[col];
-        if (val && COEFFICIENTS[val] !== undefined) {
-            sum += COEFFICIENTS[val];
-        }
-    });
-
-    row.sb = sum;
-
-    // Update Row SB UI
-    const sbCell = document.getElementById(`sb-${plantIndex}`);
-    sbCell.innerText = sum.toFixed(1);
-
-    // Apply color thresholds to row cell
-    sbCell.className = "sb-cell";
-    if (sum >= 5.0 && sum <= 8.0) {
-        sbCell.classList.add("mid");
-    } else if (sum > 8.0) {
-        sbCell.classList.add("high");
+    if (row.ee !== "" && row.candela !== "") {
+        const coe = parseFloat(row.coe);
+        const cand = parseFloat(row.candela);
+        const coe_cand = coe - cand;
+        row.coe_cand = coe_cand;
     }
-
     calculateTotals();
 }
 
-// Calculate average Suma Bruta and Candela average of the entire batch
+// Calculate batch totals: averages and Suma Bruta
 function calculateTotals() {
-    let totalSB = 0.0;
-    let validSBPlants = 0;
-    let totalCandela = 0.0;
-    let validCandelaPlants = 0;
-
-    // Leaf 2, 3, and 4 specific calculations
-    let plantsWithH2Symptom = 0;
-    let plantsWithH3Symptom = 0;
-    let totalH3Coef = 0.0;
-    let evaluatedH3Plants = 0;
-    let hasH3Necrosis = false;
-    let plantsWithH4HighSymptom = 0; // 2+ or higher
-    let plantsWithH4LowSymptom = 0;  // 1-, 1+, 2-
+    let totalCoeCand = 0.0;
+    let countCoeCand = 0;
+    
+    let totalHT = 0;
+    let countHT = 0;
+    
+    let totalHvle = 0;
+    let countHvle = 0;
 
     plantData.forEach(row => {
-        // Suma Bruta calculation
-        const hasH2 = row.h2 !== "";
-        const hasH3 = row.h3 !== "";
-        const hasH4 = row.h4 !== "";
-        const hasH5 = row.h5 !== "";
-        if (hasH2 || hasH3 || hasH4 || hasH5) {
-            totalSB += row.sb;
-            validSBPlants++;
+        if (row.coe_cand !== "" && row.coe_cand !== undefined) {
+            totalCoeCand += parseFloat(row.coe_cand);
+            countCoeCand++;
         }
-
-        // Candela average calculation
-        if (row.candela !== "") {
-            totalCandela += parseFloat(row.candela);
-            validCandelaPlants++;
+        if (row.ht !== "" && row.ht !== undefined && row.ht !== null) {
+            totalHT += parseInt(row.ht);
+            countHT++;
         }
-
-        // Leaf 2 symptom detection
-        if (row.h2 !== "") {
-            if (row.h2 !== "0") {
-                plantsWithH2Symptom++;
-            }
-        }
-
-        // Leaf 3 symptom detection
-        if (row.h3 !== "") {
-            evaluatedH3Plants++;
-            const h3Coef = COEFFICIENTS[row.h3] || 0.0;
-            totalH3Coef += h3Coef;
-            if (row.h3 !== "0") {
-                plantsWithH3Symptom++;
-            }
-            if (['4-', '4+', '5-', '5+'].includes(row.h3)) {
-                hasH3Necrosis = true;
-            }
-        }
-
-        // Leaf 4 symptom detection
-        if (row.h4 !== "" && row.h4 !== "0") {
-            if (['2+', '3-', '3+', '4-', '4+', '5-', '5+'].includes(row.h4)) {
-                plantsWithH4HighSymptom++;
-            } else {
-                plantsWithH4LowSymptom++;
-            }
+        if (row.hvle !== "" && row.hvle !== undefined && row.hvle !== null) {
+            totalHvle += parseInt(row.hvle);
+            countHvle++;
         }
     });
 
-    const avgSB = validSBPlants > 0 ? (totalSB / validSBPlants) : 0.0;
-    const avgCandela = validCandelaPlants > 0 ? (totalCandela / validCandelaPlants) : 0.0;
+    let totalCandela = 0.0;
+    let countCandela = 0;
+    plantData.forEach(row => {
+        if (row.candela !== "" && row.candela !== undefined && row.candela !== null) {
+            totalCandela += parseFloat(row.candela);
+            countCandela++;
+        }
+    });
+    const avgCandela = countCandela > 0 ? (totalCandela / countCandela) : 0.0;
 
-    const h3Incidence = evaluatedH3Plants > 0 ? (plantsWithH3Symptom / evaluatedH3Plants) * 100 : 0.0;
-    const h3Severity = evaluatedH3Plants > 0 ? (totalH3Coef / evaluatedH3Plants) : 0.0;
+    const avgCoeCand = countCoeCand > 0 ? (totalCoeCand / countCoeCand) : 0.0;
+    const sumaBruta = avgCoeCand * 10;
+    
+    const avgHT = countHT > 0 ? (totalHT / countHT) : 0.0;
+    const avgHvle = countHvle > 0 ? (totalHvle / countHvle) : 0.0;
 
-    // Determine Alarm Status for Young Leaves
-    let h3Status = "OK";
-    let h3Class = "low";
-
-    if (plantsWithH2Symptom > 0) {
-        h3Status = "CRÍTICO HOJA II";
-        h3Class = "critical";
-    } else if (plantsWithH3Symptom > 0) {
-        h3Status = "DISPARO HOJA III";
-        h3Class = "danger";
-    } else if (plantsWithH4HighSymptom > 0) {
-        h3Status = "DISPARO HOJA IV";
-        h3Class = "danger";
-    } else if (plantsWithH4LowSymptom > 0) {
-        h3Status = "PREAVISO HOJA IV";
-        h3Class = "warning";
-    }
-
-    // Update main GUI KPIs
+    // Update screen headers / summary KPI card
     const avgSBEl = document.getElementById("avg-sb-value");
-    avgSBEl.innerText = avgSB.toFixed(1);
+    avgSBEl.innerText = sumaBruta.toFixed(1);
 
-    document.getElementById("leaves-average-text").innerText = `Hojas Candela Prom: ${avgCandela.toFixed(2)}`;
+    document.getElementById("leaves-average-text").innerText = `Hojas Prom: ${avgHT.toFixed(1)} | H+VLE Prom: ${avgHvle.toFixed(1)} | Candela Prom: ${avgCandela.toFixed(2)}`;
 
-    // Update color theme of summary card based on SB thresholds
     const summaryCard = document.getElementById("sb-summary-card");
     const statusBadge = document.getElementById("sb-status-badge");
     
     summaryCard.className = "summary-kpi";
-    if (avgSB < 5.0) {
+    if (sumaBruta < 500) {
         summaryCard.classList.add("low");
         statusBadge.innerText = "Baja Presión";
         statusBadge.style.color = "var(--green)";
         statusBadge.style.background = "rgba(0, 255, 170, 0.15)";
-    } else if (avgSB >= 5.0 && avgSB <= 8.0) {
+    } else if (sumaBruta >= 500 && sumaBruta <= 800) {
         summaryCard.classList.add("mid");
         statusBadge.innerText = "Alerta Media";
         statusBadge.style.color = "var(--yellow)";
@@ -511,122 +847,177 @@ function calculateTotals() {
         statusBadge.style.color = "var(--red)";
         statusBadge.style.background = "rgba(255, 77, 77, 0.15)";
     }
-
-    // Update UI elements for Young Leaves
-    const h3Card = document.getElementById("h3-summary-card");
-    const h3StatusText = document.getElementById("h3-status-text");
-    const h3IncidenceText = document.getElementById("h3-incidence-text");
-    const h3SeverityText = document.getElementById("h3-severity-text");
-
-    if (h3Card && h3StatusText && h3IncidenceText && h3SeverityText) {
-        h3Card.className = `h3-kpi ${h3Class}`;
-        h3StatusText.innerText = h3Status;
-        h3IncidenceText.innerText = `Incidencia H3: ${h3Incidence.toFixed(0)}%`;
-        h3SeverityText.innerText = `Severidad H3: ${h3Severity.toFixed(2)}`;
-    }
+    // Update dynamic reference table for calculations in Gráficos tab
+    renderCalcReferenceTable(totalCoeCand, totalHT, totalHvle, avgCoeCand, sumaBruta, avgHT, avgHvle);
 }
 
-// Save current grid to local storage
+// Dynamically populates the reference calculation table below the graph
+function renderCalcReferenceTable(totalCoeCand, totalHT, totalHvle, avgCoeCand, sumaBruta, avgHT, avgHvle) {
+    const tableBody = document.getElementById("calc-reference-table-body");
+    if (!tableBody) return;
+
+    let rowsHTML = "";
+    plantData.forEach(p => {
+        rowsHTML += `
+            <div style="display: grid; grid-template-columns: repeat(7, 1fr); padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.02);">
+                <div>${p.num}</div>
+                <div>${p.ee !== "" ? p.ee : "-"}</div>
+                <div>${p.coe !== "" ? p.coe : "-"}</div>
+                <div>${p.candela !== "" ? p.candela : "-"}</div>
+                <div>${p.coe_cand !== "" && p.coe_cand !== undefined ? p.coe_cand.toFixed(1) : "-"}</div>
+                <div>${p.ht !== "" ? p.ht : "-"}</div>
+                <div>${p.hvle !== "" ? p.hvle : "-"}</div>
+            </div>
+        `;
+    });
+
+    // Add totals/promedios footer
+    rowsHTML += `
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); font-weight: bold; border-top: 1.5px solid var(--border-glass); padding-top: 4px; margin-top: 2px;">
+            <div style="grid-column: span 4; text-align: left; padding-left: 6px;">Total</div>
+            <div>${totalCoeCand.toFixed(1)}</div>
+            <div>${totalHT}</div>
+            <div>${totalHvle}</div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); font-weight: bold;">
+            <div style="grid-column: span 4; text-align: left; padding-left: 6px;">Promedio</div>
+            <div>${avgCoeCand > 0 ? avgCoeCand.toFixed(2) : "0.00"}</div>
+            <div>${avgHT.toFixed(1)}</div>
+            <div>${avgHvle.toFixed(1)}</div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); font-weight: 800; color: var(--cyan); margin-top: 2px;">
+            <div style="grid-column: span 4; text-align: left; padding-left: 6px;">Suma Bruta</div>
+            <div style="grid-column: span 3; text-align: right; padding-right: 12px; font-size: 0.85rem;">${sumaBruta.toFixed(1)}</div>
+        </div>
+    `;
+
+    tableBody.innerHTML = rowsHTML;
+}
+
+// Save current muestreo to local storage
 function saveCurrentMuestreo() {
-    // Validate that at least some data is filled
     let hasData = false;
     for (let row of plantData) {
-        if (row.h2 !== "" || row.h3 !== "" || row.h4 !== "" || row.h5 !== "" || row.candela !== "") {
+        if (row.ee !== "" || row.candela !== "" || row.ht !== "" || row.hvle !== "") {
+            hasData = true;
+            break;
+        }
+    }
+    for (let row of sanidadData) {
+        if (row.ht !== "" || row.hvle !== "" || row.hvlq_low !== "" || row.hvlq_high !== "" || row.hvlc !== "") {
+            hasData = true;
+            break;
+        }
+    }
+    for (let row of sanidadS7Data) {
+        if (row.ht !== "" || row.hvle !== "" || row.hvlq_low !== "" || row.hvlq_high !== "" || row.hvlc !== "") {
+            hasData = true;
+            break;
+        }
+    }
+    for (let row of sanidadS11Data) {
+        if (row.ht !== "" || row.hvle !== "" || row.hvlq_low !== "" || row.hvlq_high !== "" || row.hvlc !== "") {
             hasData = true;
             break;
         }
     }
 
     if (!hasData) {
-        alert("Por favor introduce datos de al menos una planta antes de guardar.");
+        alert("Por favor introduce datos de Suma Bruta o Sanidad antes de guardar.");
         return;
     }
 
-    // Verify if all plants are complete. Warn if incomplete.
-    let incomplete = false;
-    for (let row of plantData) {
-        if (row.h2 === "" || row.h3 === "" || row.h4 === "" || row.h5 === "" || row.candela === "") {
-            incomplete = true;
-            break;
-        }
-    }
-
-    if (incomplete) {
-        if (!confirm("Hay plantas con datos incompletos. ¿Deseas guardar de todos modos?")) {
-            return;
-        }
-    }
-
-    // Calculate totals one final time
-    calculateTotals();
-    
-    let totalSB = 0.0;
-    let validSBPlants = 0;
-    let totalCandela = 0.0;
-    let validCandelaPlants = 0;
+    // Calculations for Suma Bruta
+    let totalCoeCand = 0.0;
+    let countCoeCand = 0;
+    let totalHT = 0;
+    let countHT = 0;
+    let totalHvle = 0;
+    let countHvle = 0;
 
     plantData.forEach(row => {
-        if (row.h2 !== "" || row.h3 !== "" || row.h4 !== "" || row.h5 !== "") {
-            totalSB += row.sb;
-            validSBPlants++;
+        if (row.coe_cand !== "" && row.coe_cand !== undefined && row.coe_cand !== null) {
+            totalCoeCand += parseFloat(row.coe_cand);
+            countCoeCand++;
         }
-        if (row.candela !== "") {
-            totalCandela += parseFloat(row.candela);
-            validCandelaPlants++;
+        if (row.ht !== "" && row.ht !== undefined && row.ht !== null) {
+            totalHT += parseInt(row.ht);
+            countHT++;
+        }
+        if (row.hvle !== "" && row.hvle !== undefined && row.hvle !== null) {
+            totalHvle += parseInt(row.hvle);
+            countHvle++;
         }
     });
 
-    const avgSB = validSBPlants > 0 ? (totalSB / validSBPlants) : 0.0;
-    const avgCandela = validCandelaPlants > 0 ? (totalCandela / validCandelaPlants) : 0.0;
+    const avgCoeCand = countCoeCand > 0 ? (totalCoeCand / countCoeCand) : 0.0;
+    const sumaBruta = avgCoeCand * 10;
+    const avgHT = countHT > 0 ? (totalHT / countHT) : 0.0;
+    const avgHvle = countHvle > 0 ? (totalHvle / countHvle) : 0.0;
 
-    // Calculate young leaves stats to save
-    let plantsWithH2Symptom = 0;
-    let plantsWithH3Symptom = 0;
-    let totalH3Coef = 0.0;
-    let evaluatedH3Plants = 0;
-    let hasH3Necrosis = false;
-    let plantsWithH4HighSymptom = 0;
-    let plantsWithH4LowSymptom = 0;
+    // Calculations for Sanidad RP
+    let s_totalHT = 0, s_countHT = 0;
+    let s_totalHVLE = 0, s_countHVLE = 0;
+    let s_totalHVLQ_low = 0, s_countHVLQ_low = 0;
+    let s_totalHVLQ_high = 0, s_countHVLQ_high = 0;
+    let s_totalHVLC = 0, s_countHVLC = 0;
 
-    plantData.forEach(row => {
-        if (row.h2 !== "" && row.h2 !== "0") {
-            plantsWithH2Symptom++;
-        }
-        if (row.h3 !== "") {
-            evaluatedH3Plants++;
-            const h3Coef = COEFFICIENTS[row.h3] || 0.0;
-            totalH3Coef += h3Coef;
-            if (row.h3 !== "0") {
-                plantsWithH3Symptom++;
-            }
-            if (['4-', '4+', '5-', '5+'].includes(row.h3)) {
-                hasH3Necrosis = true;
-            }
-        }
-        if (row.h4 !== "" && row.h4 !== "0") {
-            if (['2+', '3-', '3+', '4-', '4+', '5-', '5+'].includes(row.h4)) {
-                plantsWithH4HighSymptom++;
-            } else {
-                plantsWithH4LowSymptom++;
-            }
-        }
+    sanidadData.forEach(row => {
+        if (row.ht !== "" && row.ht !== undefined && row.ht !== null) { s_totalHT += parseInt(row.ht); s_countHT++; }
+        if (row.hvle !== "" && row.hvle !== undefined && row.hvle !== null) { s_totalHVLE += parseInt(row.hvle); s_countHVLE++; }
+        if (row.hvlq_low !== "" && row.hvlq_low !== undefined && row.hvlq_low !== null) { s_totalHVLQ_low += parseInt(row.hvlq_low); s_countHVLQ_low++; }
+        if (row.hvlq_high !== "" && row.hvlq_high !== undefined && row.hvlq_high !== null) { s_totalHVLQ_high += parseInt(row.hvlq_high); s_countHVLQ_high++; }
+        if (row.hvlc !== "" && row.hvlc !== undefined && row.hvlc !== null) { s_totalHVLC += parseInt(row.hvlc); s_countHVLC++; }
     });
 
-    const h3Incidence = evaluatedH3Plants > 0 ? (plantsWithH3Symptom / evaluatedH3Plants) * 100 : 0.0;
-    const h3Severity = evaluatedH3Plants > 0 ? (totalH3Coef / evaluatedH3Plants) : 0.0;
+    const s_avgHT = s_countHT > 0 ? (s_totalHT / s_countHT) : 0.0;
+    const s_avgHVLE = s_countHVLE > 0 ? (s_totalHVLE / s_countHVLE) : 0.0;
+    const s_avgHVLQ_low = s_countHVLQ_low > 0 ? (s_totalHVLQ_low / s_countHVLQ_low) : 0.0;
+    const s_avgHVLQ_high = s_countHVLQ_high > 0 ? (s_totalHVLQ_high / s_countHVLQ_high) : 0.0;
+    const s_avgHVLC = s_countHVLC > 0 ? (s_totalHVLC / s_countHVLC) : 0.0;
 
-    let h3Status = "OK";
-    if (plantsWithH2Symptom > 0) {
-        h3Status = "CRÍTICO HOJA II";
-    } else if (plantsWithH3Symptom > 0) {
-        h3Status = "DISPARO HOJA III";
-    } else if (plantsWithH4HighSymptom > 0) {
-        h3Status = "DISPARO HOJA IV";
-    } else if (plantsWithH4LowSymptom > 0) {
-        h3Status = "PREAVISO HOJA IV";
-    }
+    // Calculations for Sanidad S7
+    let s7_totalHT = 0, s7_countHT = 0;
+    let s7_totalHVLE = 0, s7_countHVLE = 0;
+    let s7_totalHVLQ_low = 0, s7_countHVLQ_low = 0;
+    let s7_totalHVLQ_high = 0, s7_countHVLQ_high = 0;
+    let s7_totalHVLC = 0, s7_countHVLC = 0;
 
-    // Construct Muestreo Object
+    sanidadS7Data.forEach(row => {
+        if (row.ht !== "" && row.ht !== undefined && row.ht !== null) { s7_totalHT += parseInt(row.ht); s7_countHT++; }
+        if (row.hvle !== "" && row.hvle !== undefined && row.hvle !== null) { s7_totalHVLE += parseInt(row.hvle); s7_countHVLE++; }
+        if (row.hvlq_low !== "" && row.hvlq_low !== undefined && row.hvlq_low !== null) { s7_totalHVLQ_low += parseInt(row.hvlq_low); s7_countHVLQ_low++; }
+        if (row.hvlq_high !== "" && row.hvlq_high !== undefined && row.hvlq_high !== null) { s7_totalHVLQ_high += parseInt(row.hvlq_high); s7_countHVLQ_high++; }
+        if (row.hvlc !== "" && row.hvlc !== undefined && row.hvlc !== null) { s7_totalHVLC += parseInt(row.hvlc); s7_countHVLC++; }
+    });
+
+    const s7_avgHT = s7_countHT > 0 ? (s7_totalHT / s7_countHT) : 0.0;
+    const s7_avgHVLE = s7_countHVLE > 0 ? (s7_totalHVLE / s7_countHVLE) : 0.0;
+    const s7_avgHVLQ_low = s7_countHVLQ_low > 0 ? (s7_totalHVLQ_low / s7_countHVLQ_low) : 0.0;
+    const s7_avgHVLQ_high = s7_countHVLQ_high > 0 ? (s7_totalHVLQ_high / s7_countHVLQ_high) : 0.0;
+    const s7_avgHVLC = s7_countHVLC > 0 ? (s7_totalHVLC / s7_countHVLC) : 0.0;
+
+    // Calculations for Sanidad S11
+    let s11_totalHT = 0, s11_countHT = 0;
+    let s11_totalHVLE = 0, s11_countHVLE = 0;
+    let s11_totalHVLQ_low = 0, s11_countHVLQ_low = 0;
+    let s11_totalHVLQ_high = 0, s11_countHVLQ_high = 0;
+    let s11_totalHVLC = 0, s11_countHVLC = 0;
+
+    sanidadS11Data.forEach(row => {
+        if (row.ht !== "" && row.ht !== undefined && row.ht !== null) { s11_totalHT += parseInt(row.ht); s11_countHT++; }
+        if (row.hvle !== "" && row.hvle !== undefined && row.hvle !== null) { s11_totalHVLE += parseInt(row.hvle); s11_countHVLE++; }
+        if (row.hvlq_low !== "" && row.hvlq_low !== undefined && row.hvlq_low !== null) { s11_totalHVLQ_low += parseInt(row.hvlq_low); s11_countHVLQ_low++; }
+        if (row.hvlq_high !== "" && row.hvlq_high !== undefined && row.hvlq_high !== null) { s11_totalHVLQ_high += parseInt(row.hvlq_high); s11_countHVLQ_high++; }
+        if (row.hvlc !== "" && row.hvlc !== undefined && row.hvlc !== null) { s11_totalHVLC += parseInt(row.hvlc); s11_countHVLC++; }
+    });
+
+    const s11_avgHT = s11_countHT > 0 ? (s11_totalHT / s11_countHT) : 0.0;
+    const s11_avgHVLE = s11_countHVLE > 0 ? (s11_totalHVLE / s11_countHVLE) : 0.0;
+    const s11_avgHVLQ_low = s11_countHVLQ_low > 0 ? (s11_totalHVLQ_low / s11_countHVLQ_low) : 0.0;
+    const s11_avgHVLQ_high = s11_countHVLQ_high > 0 ? (s11_totalHVLQ_high / s11_countHVLQ_high) : 0.0;
+    const s11_avgHVLC = s11_countHVLC > 0 ? (s11_totalHVLC / s11_countHVLC) : 0.0;
+
     const station_id = document.getElementById("input-station-id").value || "DEMO-123";
     const finca = document.getElementById("input-finca").value;
     const lote = document.getElementById("input-lote").value;
@@ -638,19 +1029,40 @@ function saveCurrentMuestreo() {
         finca,
         lote,
         evaluador,
-        hojas_promedio: parseFloat(avgCandela.toFixed(2)),
-        suma_bruta_promedio: parseFloat(avgSB.toFixed(2)),
+        hojas_promedio: parseFloat(avgHT.toFixed(1)),
+        hvle_promedio: parseFloat(avgHvle.toFixed(1)),
+        suma_bruta_promedio: parseFloat(sumaBruta.toFixed(1)),
         detalles_json: {
-            plants: plantData,
-            h3_incidencia: parseFloat(h3Incidence.toFixed(1)),
-            h3_severidad: parseFloat(h3Severity.toFixed(2)),
-            h3_estado: h3Status
+            plants: plantData
+        },
+        parida_ht_promedio: parseFloat(s_avgHT.toFixed(1)),
+        parida_hvle_promedio: parseFloat(s_avgHVLE.toFixed(1)),
+        parida_hvlq_bajo_promedio: parseFloat(s_avgHVLQ_low.toFixed(1)),
+        parida_hvlq_alto_promedio: parseFloat(s_avgHVLQ_high.toFixed(1)),
+        parida_hvlc_promedio: parseFloat(s_avgHVLC.toFixed(1)),
+        parida_detalles_json: {
+            plants: sanidadData
+        },
+        s7_ht_promedio: parseFloat(s7_avgHT.toFixed(1)),
+        s7_hvle_promedio: parseFloat(s7_avgHVLE.toFixed(1)),
+        s7_hvlq_bajo_promedio: parseFloat(s7_avgHVLQ_low.toFixed(1)),
+        s7_hvlq_alto_promedio: parseFloat(s7_avgHVLQ_high.toFixed(1)),
+        s7_hvlc_promedio: parseFloat(s7_avgHVLC.toFixed(1)),
+        s7_detalles_json: {
+            plants: sanidadS7Data
+        },
+        s11_ht_promedio: parseFloat(s11_avgHT.toFixed(1)),
+        s11_hvle_promedio: parseFloat(s11_avgHVLE.toFixed(1)),
+        s11_hvlq_bajo_promedio: parseFloat(s11_avgHVLQ_low.toFixed(1)),
+        s11_hvlq_alto_promedio: parseFloat(s11_avgHVLQ_high.toFixed(1)),
+        s11_hvlc_promedio: parseFloat(s11_avgHVLC.toFixed(1)),
+        s11_detalles_json: {
+            plants: sanidadS11Data
         },
         created_at: new Date().toISOString(),
         synced: false
     };
 
-    // Save to history list
     historyData.unshift(newMuestreo);
     saveHistoryToLocalStorage();
 
@@ -658,11 +1070,11 @@ function saveCurrentMuestreo() {
 
     // Reset UI Grid
     initBlankGrid();
+    initBlankSanidadGrid();
 
-    // Switch view to History to show item
-    switchView('historial', document.querySelectorAll(".tab-btn")[1]);
+    // Switch view to History tab
+    switchView('historial', document.querySelectorAll(".tab-btn")[2]);
     
-    // Auto-sync if online
     if (isOnline) {
         autoSyncUnsynced();
     }
@@ -670,11 +1082,38 @@ function saveCurrentMuestreo() {
 
 // Local Storage Helpers
 function loadHistory() {
-    const raw = localStorage.getItem("rafiqui_suma_bruta_history");
-    if (raw) {
-        historyData = JSON.parse(raw);
+    userRole = localStorage.getItem("rafiqui_user_role") || "evaluador";
+    const selectRole = document.getElementById("select-role");
+    if (selectRole) selectRole.value = userRole;
+
+    const changePassContainer = document.getElementById("change-pass-container");
+    if (changePassContainer) {
+        changePassContainer.style.display = userRole === "ingeniero" ? "block" : "none";
+    }
+
+    const histFilters = document.getElementById("historial-filters");
+    const chartFilters = document.getElementById("graficos-filters");
+    if (histFilters) histFilters.style.display = userRole === "ingeniero" ? "flex" : "none";
+    if (chartFilters) chartFilters.style.display = userRole === "ingeniero" ? "flex" : "none";
+
+    if (userRole === "evaluador") {
+        const raw = localStorage.getItem("rafiqui_suma_bruta_history");
+        if (raw) {
+            historyData = JSON.parse(raw);
+        } else {
+            historyData = [];
+        }
     } else {
-        historyData = [];
+        if (globalHistoryData && globalHistoryData.length > 0) {
+            historyData = [...globalHistoryData];
+        } else {
+            const raw = localStorage.getItem("rafiqui_suma_bruta_history");
+            if (raw) {
+                historyData = JSON.parse(raw);
+            } else {
+                historyData = [];
+            }
+        }
     }
 }
 
@@ -706,17 +1145,16 @@ function addProductApplication() {
     };
     
     applicationsData.push(newApp);
-    // Sort applications by date descending for UI listing
     applicationsData.sort((a, b) => new Date(b.date) - new Date(a.date));
     
     saveApplications();
     renderApplicationsList();
     
-    // Clear text field
     productInput.value = "";
-    
-    // Redraw trend chart to show the new event marker
     renderTrendChart();
+    renderSanidadTrendChart();
+    renderSanidadS7TrendChart();
+    renderSanidadS11TrendChart();
 }
 
 function deleteProductApplication(id) {
@@ -725,6 +1163,9 @@ function deleteProductApplication(id) {
         saveApplications();
         renderApplicationsList();
         renderTrendChart();
+        renderSanidadTrendChart();
+        renderSanidadS7TrendChart();
+        renderSanidadS11TrendChart();
     }
 }
 
@@ -783,9 +1224,9 @@ function renderHistoryList() {
         const dateStr = new Date(item.created_at).toLocaleString();
         
         let statusClass = "low";
-        if (item.suma_bruta_promedio >= 5.0 && item.suma_bruta_promedio <= 8.0) {
+        if (item.suma_bruta_promedio >= 500 && item.suma_bruta_promedio <= 800) {
             statusClass = "mid";
-        } else if (item.suma_bruta_promedio > 8.0) {
+        } else if (item.suma_bruta_promedio > 800) {
             statusClass = "high";
         }
 
@@ -807,7 +1248,7 @@ function renderHistoryList() {
     });
 }
 
-// Details Modal view of a completed sampling
+// Details Modal view of a completed sampling V2
 function openDetailsModal(index) {
     currentDetailIndex = index;
     const item = historyData[index];
@@ -822,11 +1263,11 @@ function openDetailsModal(index) {
     const statusEl = document.getElementById("modal-status");
     
     kpiCard.className = "summary-kpi";
-    if (item.suma_bruta_promedio < 5.0) {
+    if (item.suma_bruta_promedio < 500) {
         kpiCard.classList.add("low");
         statusEl.innerText = "Baja Presión";
         statusEl.style.color = "var(--green)";
-    } else if (item.suma_bruta_promedio >= 5.0 && item.suma_bruta_promedio <= 8.0) {
+    } else if (item.suma_bruta_promedio >= 500 && item.suma_bruta_promedio <= 800) {
         kpiCard.classList.add("mid");
         statusEl.innerText = "Alerta Media";
         statusEl.style.color = "var(--yellow)";
@@ -836,43 +1277,17 @@ function openDetailsModal(index) {
         statusEl.style.color = "var(--red)";
     }
 
-    // Extract young leaves stats
-    const h3Inc = item.detalles_json.h3_incidencia !== undefined ? item.detalles_json.h3_incidencia : 0.0;
-    const h3Sev = item.detalles_json.h3_severidad !== undefined ? item.detalles_json.h3_severidad : 0.0;
-    const h3Est = item.detalles_json.h3_estado !== undefined ? item.detalles_json.h3_estado : "OK";
-
-    let h3ModalClass = "low";
-    if (h3Est.includes("CRÍTICO")) {
-        h3ModalClass = "critical";
-    } else if (h3Est.includes("DISPARO")) {
-        h3ModalClass = "danger";
-    } else if (h3Est.includes("PREAVISO")) {
-        h3ModalClass = "warning";
-    }
-
-    const modalH3Card = document.getElementById("modal-h3-card");
-    const modalH3Status = document.getElementById("modal-h3-status");
-    const modalH3Inc = document.getElementById("modal-h3-incidence");
-    const modalH3Sev = document.getElementById("modal-h3-severity");
-
-    if (modalH3Card && modalH3Status && modalH3Inc && modalH3Sev) {
-        modalH3Card.className = `h3-kpi ${h3ModalClass}`;
-        modalH3Status.innerText = h3Est;
-        modalH3Inc.innerText = `Incidencia H3: ${h3Inc.toFixed(0)}%`;
-        modalH3Sev.innerText = `Severidad H3: ${h3Sev.toFixed(2)}`;
-    }
-
-    // Populate Details Table
+    // Populate Details Table V2
     const tableContainer = document.getElementById("modal-details-table");
     tableContainer.innerHTML = `
         <div class="table-header-grid" style="padding: 0;">
             <div>Pl.</div>
-            <div>H. II</div>
-            <div>H. III</div>
-            <div>H. IV</div>
-            <div>H. V</div>
+            <div>EE</div>
+            <div>COE</div>
             <div>Cand.</div>
-            <div>SB</div>
+            <div>COE-Cand.</div>
+            <div>HT</div>
+            <div>H+VLE</div>
         </div>
     `;
 
@@ -882,31 +1297,209 @@ function openDetailsModal(index) {
         row.className = "table-row-grid";
         row.style.padding = "6px";
         row.style.background = "none";
-        
-        let rowStatusClass = "";
-        if (p.sb >= 5.0 && p.sb <= 8.0) {
-            rowStatusClass = "mid";
-        } else if (p.sb > 8.0) {
-            rowStatusClass = "high";
-        }
-
-        // Determine classes for each leaf symptom
-        const h2Style = getSymptomClassForLeaf('h2', p.h2);
-        const h3Style = getSymptomClassForLeaf('h3', p.h3);
-        const h4Style = getSymptomClassForLeaf('h4', p.h4);
-        const h5Style = getSymptomClassForLeaf('h5', p.h5);
 
         row.innerHTML = `
             <div class="plant-num">${p.num}</div>
-            <div class="${h2Style}" style="${h2Style ? 'border-radius:6px; padding:2px 0;' : ''}">${p.h2 || '-'}</div>
-            <div class="${h3Style}" style="${h3Style ? 'border-radius:6px; padding:2px 0;' : ''}">${p.h3 || '-'}</div>
-            <div class="${h4Style}" style="${h4Style ? 'border-radius:6px; padding:2px 0;' : ''}">${p.h4 || '-'}</div>
-            <div class="${h5Style}" style="${h5Style ? 'border-radius:6px; padding:2px 0;' : ''}">${p.h5 || '-'}</div>
+            <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.ee || '-'}</div>
+            <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.coe || '-'}</div>
             <div class="input-cell candela" style="background:none; border:none; color:inherit; padding:2px 0;">${p.candela || '-'}</div>
-            <div class="sb-cell ${rowStatusClass}" style="border-radius:6px; padding:2px 0;">${p.sb.toFixed(1)}</div>
+            <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.coe_cand !== "" && p.coe_cand !== undefined ? p.coe_cand.toFixed(1) : '-'}</div>
+            <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.ht || '-'}</div>
+            <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvle || '-'}</div>
         `;
         tableContainer.appendChild(row);
     });
+
+    // Populate Sanidad details if available
+    const sanidadTableContainer = document.getElementById("modal-sanidad-table");
+    const sanidadTitle = document.getElementById("modal-sanidad-title");
+
+    if (item.parida_detalles_json && item.parida_detalles_json.plants) {
+        sanidadTitle.style.display = "block";
+        sanidadTableContainer.style.display = "flex";
+        sanidadTableContainer.style.flexDirection = "column";
+        
+        sanidadTableContainer.innerHTML = `
+            <div class="table-header-grid" style="grid-template-columns: 0.6fr repeat(5, 1fr); padding: 0; font-size: 0.68rem;">
+                <div>Pl.</div>
+                <div>HT</div>
+                <div>H+VLE</div>
+                <div>H+VLQ&lt;5%</div>
+                <div>H+VLQ&gt;5%</div>
+                <div>H+VLC</div>
+            </div>
+        `;
+
+        const sPlants = item.parida_detalles_json.plants;
+        sPlants.forEach(p => {
+            const row = document.createElement("div");
+            row.className = "table-row-grid";
+            row.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+            row.style.padding = "6px";
+            row.style.background = "none";
+
+            row.innerHTML = `
+                <div class="plant-num">${p.num}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.ht !== "" && p.ht !== undefined ? p.ht : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvle !== "" && p.hvle !== undefined ? p.hvle : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlq_low !== "" && p.hvlq_low !== undefined ? p.hvlq_low : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlq_high !== "" && p.hvlq_high !== undefined ? p.hvlq_high : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlc !== "" && p.hvlc !== undefined ? p.hvlc : '-'}</div>
+            `;
+            sanidadTableContainer.appendChild(row);
+        });
+
+        // Also add a summary average row for Sanidad in modal
+        const summaryRow = document.createElement("div");
+        summaryRow.style.display = "grid";
+        summaryRow.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+        summaryRow.style.fontWeight = "bold";
+        summaryRow.style.fontSize = "0.72rem";
+        summaryRow.style.borderTop = "1.5px solid var(--border-glass)";
+        summaryRow.style.paddingTop = "6px";
+        summaryRow.style.marginTop = "4px";
+        summaryRow.style.textAlign = "center";
+        summaryRow.innerHTML = `
+            <div style="text-align: left; padding-left: 2px;">Prom.</div>
+            <div>${item.parida_ht_promedio !== undefined ? item.parida_ht_promedio.toFixed(1) : '-'}</div>
+            <div>${item.parida_hvle_promedio !== undefined ? item.parida_hvle_promedio.toFixed(1) : '-'}</div>
+            <div>${item.parida_hvlq_bajo_promedio !== undefined ? item.parida_hvlq_bajo_promedio.toFixed(1) : '-'}</div>
+            <div>${item.parida_hvlq_alto_promedio !== undefined ? item.parida_hvlq_alto_promedio.toFixed(1) : '-'}</div>
+            <div>${item.parida_hvlc_promedio !== undefined ? item.parida_hvlc_promedio.toFixed(1) : '-'}</div>
+        `;
+        sanidadTableContainer.appendChild(summaryRow);
+
+    } else {
+        sanidadTitle.style.display = "none";
+        sanidadTableContainer.style.display = "none";
+    }
+
+    // Populate Sanidad S7 details if available
+    const sanidadS7TableContainer = document.getElementById("modal-sanidad-s7-table");
+    const sanidadS7Title = document.getElementById("modal-sanidad-s7-title");
+
+    if (item.s7_detalles_json && item.s7_detalles_json.plants) {
+        sanidadS7Title.style.display = "block";
+        sanidadS7TableContainer.style.display = "flex";
+        sanidadS7TableContainer.style.flexDirection = "column";
+        
+        sanidadS7TableContainer.innerHTML = `
+            <div class="table-header-grid" style="grid-template-columns: 0.6fr repeat(5, 1fr); padding: 0; font-size: 0.68rem;">
+                <div>Pl.</div>
+                <div>HT</div>
+                <div>H+VLE</div>
+                <div>H+VLQ&lt;5%</div>
+                <div>H+VLQ&gt;5%</div>
+                <div>H+VLC</div>
+            </div>
+        `;
+
+        const s7Plants = item.s7_detalles_json.plants;
+        s7Plants.forEach(p => {
+            const row = document.createElement("div");
+            row.className = "table-row-grid";
+            row.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+            row.style.padding = "6px";
+            row.style.background = "none";
+
+            row.innerHTML = `
+                <div class="plant-num">${p.num}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.ht !== "" && p.ht !== undefined ? p.ht : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvle !== "" && p.hvle !== undefined ? p.hvle : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlq_low !== "" && p.hvlq_low !== undefined ? p.hvlq_low : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlq_high !== "" && p.hvlq_high !== undefined ? p.hvlq_high : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlc !== "" && p.hvlc !== undefined ? p.hvlc : '-'}</div>
+            `;
+            sanidadS7TableContainer.appendChild(row);
+        });
+
+        // Also add a summary average row for Sanidad S7 in modal
+        const summaryRowS7 = document.createElement("div");
+        summaryRowS7.style.display = "grid";
+        summaryRowS7.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+        summaryRowS7.style.fontWeight = "bold";
+        summaryRowS7.style.fontSize = "0.72rem";
+        summaryRowS7.style.borderTop = "1.5px solid var(--border-glass)";
+        summaryRowS7.style.paddingTop = "6px";
+        summaryRowS7.style.marginTop = "4px";
+        summaryRowS7.style.textAlign = "center";
+        summaryRowS7.innerHTML = `
+            <div style="text-align: left; padding-left: 2px;">Prom.</div>
+            <div>${item.s7_ht_promedio !== undefined ? item.s7_ht_promedio.toFixed(1) : '-'}</div>
+            <div>${item.s7_hvle_promedio !== undefined ? item.s7_hvle_promedio.toFixed(1) : '-'}</div>
+            <div>${item.s7_hvlq_bajo_promedio !== undefined ? item.s7_hvlq_bajo_promedio.toFixed(1) : '-'}</div>
+            <div>${item.s7_hvlq_alto_promedio !== undefined ? item.s7_hvlq_alto_promedio.toFixed(1) : '-'}</div>
+            <div>${item.s7_hvlc_promedio !== undefined ? item.s7_hvlc_promedio.toFixed(1) : '-'}</div>
+        `;
+        sanidadS7TableContainer.appendChild(summaryRowS7);
+
+    } else {
+        sanidadS7Title.style.display = "none";
+        sanidadS7TableContainer.style.display = "none";
+    }
+
+    // Populate Sanidad S11 details if available
+    const sanidadS11TableContainer = document.getElementById("modal-sanidad-s11-table");
+    const sanidadS11Title = document.getElementById("modal-sanidad-s11-title");
+
+    if (item.s11_detalles_json && item.s11_detalles_json.plants) {
+        sanidadS11Title.style.display = "block";
+        sanidadS11TableContainer.style.display = "flex";
+        sanidadS11TableContainer.style.flexDirection = "column";
+        
+        sanidadS11TableContainer.innerHTML = `
+            <div class="table-header-grid" style="grid-template-columns: 0.6fr repeat(5, 1fr); padding: 0; font-size: 0.68rem;">
+                <div>Pl.</div>
+                <div>HT</div>
+                <div>H+VLE</div>
+                <div>H+VLQ&lt;5%</div>
+                <div>H+VLQ&gt;5%</div>
+                <div>H+VLC</div>
+            </div>
+        `;
+
+        const s11Plants = item.s11_detalles_json.plants;
+        s11Plants.forEach(p => {
+            const row = document.createElement("div");
+            row.className = "table-row-grid";
+            row.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+            row.style.padding = "6px";
+            row.style.background = "none";
+
+            row.innerHTML = `
+                <div class="plant-num">${p.num}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.ht !== "" && p.ht !== undefined ? p.ht : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvle !== "" && p.hvle !== undefined ? p.hvle : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlq_low !== "" && p.hvlq_low !== undefined ? p.hvlq_low : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlq_high !== "" && p.hvlq_high !== undefined ? p.hvlq_high : '-'}</div>
+                <div class="input-cell" style="background:none; border:none; color:inherit; padding:2px 0;">${p.hvlc !== "" && p.hvlc !== undefined ? p.hvlc : '-'}</div>
+            `;
+            sanidadS11TableContainer.appendChild(row);
+        });
+
+        const summaryRowS11 = document.createElement("div");
+        summaryRowS11.style.display = "grid";
+        summaryRowS11.style.gridTemplateColumns = "0.6fr repeat(5, 1fr)";
+        summaryRowS11.style.fontWeight = "bold";
+        summaryRowS11.style.fontSize = "0.72rem";
+        summaryRowS11.style.borderTop = "1.5px solid var(--border-glass)";
+        summaryRowS11.style.paddingTop = "6px";
+        summaryRowS11.style.marginTop = "4px";
+        summaryRowS11.style.textAlign = "center";
+        summaryRowS11.innerHTML = `
+            <div style="text-align: left; padding-left: 2px;">Prom.</div>
+            <div>${item.s11_ht_promedio !== undefined ? item.s11_ht_promedio.toFixed(1) : '-'}</div>
+            <div>${item.s11_hvle_promedio !== undefined ? item.s11_hvle_promedio.toFixed(1) : '-'}</div>
+            <div>${item.s11_hvlq_bajo_promedio !== undefined ? item.s11_hvlq_bajo_promedio.toFixed(1) : '-'}</div>
+            <div>${item.s11_hvlq_alto_promedio !== undefined ? item.s11_hvlq_alto_promedio.toFixed(1) : '-'}</div>
+            <div>${item.s11_hvlc_promedio !== undefined ? item.s11_hvlc_promedio.toFixed(1) : '-'}</div>
+        `;
+        sanidadS11TableContainer.appendChild(summaryRowS11);
+
+    } else {
+        sanidadS11Title.style.display = "none";
+        sanidadS11TableContainer.style.display = "none";
+    }
 
     document.getElementById("details-modal").style.display = "flex";
 }
@@ -922,9 +1515,27 @@ function closeDetailsModal(event) {
 function deleteCurrentMuestreo() {
     if (currentDetailIndex === null) return;
     
-    if (confirm("¿Estás seguro de que deseas eliminar permanentemente este registro de muestreo de tu dispositivo?")) {
+    if (confirm("¿Estás seguro de que deseas eliminar permanentemente este registro de muestreo?")) {
+        const item = historyData[currentDetailIndex];
+        
+        // If synced and online, delete from Supabase
+        if (item.synced && navigator.onLine) {
+            deleteRecordFromSupabase(item.created_at, item.station_id);
+        }
+        
+        if (userRole === "ingeniero") {
+            globalHistoryData = globalHistoryData.filter(x => x.created_at !== item.created_at);
+        }
+        
+        // Remove from local storage history
+        const localRaw = localStorage.getItem("rafiqui_suma_bruta_history");
+        if (localRaw) {
+            let localHistory = JSON.parse(localRaw);
+            localHistory = localHistory.filter(x => x.created_at !== item.created_at);
+            localStorage.setItem("rafiqui_suma_bruta_history", JSON.stringify(localHistory));
+        }
+        
         historyData.splice(currentDetailIndex, 1);
-        saveHistoryToLocalStorage();
         document.getElementById("details-modal").style.display = "none";
         renderHistoryList();
     }
@@ -932,19 +1543,45 @@ function deleteCurrentMuestreo() {
 
 // Render trend chart of Suma Bruta
 function renderTrendChart() {
-    const ctx = document.getElementById("trend-chart").getContext("2d");
+    const trendCanvas = document.getElementById("trend-chart");
+    if (!trendCanvas) return;
+    const ctx = trendCanvas.getContext("2d");
     
-    // Sort data chronologically for graphing (historyData is newest first, so we reverse it)
     const sortedData = [...historyData].reverse();
 
-    // Filter data by lote to show clean trends (optional, but let's graph everything in order with lote labels)
     const labels = sortedData.map(item => {
         const d = new Date(item.created_at);
-        return `${d.getDate()}/${d.getMonth()+1} (${item.lote})`;
+        // Calculate ISO Week Number
+        const tempDate = new Date(d.valueOf());
+        const dayNum = (d.getDay() + 6) % 7;
+        tempDate.setDate(tempDate.getDate() - dayNum + 3);
+        const firstThursday = tempDate.valueOf();
+        tempDate.setMonth(0, 1);
+        if (tempDate.getDay() !== 4) {
+            tempDate.setMonth(0, 1 + ((4 - tempDate.getDay()) + 7) % 7);
+        }
+        const weekNum = 1 + Math.ceil((firstThursday - tempDate) / 604800000);
+        return `Sem. ${weekNum} (${item.lote})`;
     });
     
     const values = sortedData.map(item => item.suma_bruta_promedio);
-    const candelaValues = sortedData.map(item => item.hojas_promedio !== undefined ? item.hojas_promedio : 0.0);
+    const htValues = sortedData.map(item => item.hojas_promedio !== undefined ? item.hojas_promedio : 0.0);
+    const hvleValues = sortedData.map(item => item.hvle_promedio !== undefined ? item.hvle_promedio : 0.0);
+    const candelaValues = sortedData.map(item => {
+        if (item.detalles_json && item.detalles_json.plants) {
+            const plants = item.detalles_json.plants;
+            let sum = 0;
+            let count = 0;
+            plants.forEach(p => {
+                if (p.candela !== "" && p.candela !== undefined && p.candela !== null) {
+                    sum += parseFloat(p.candela);
+                    count++;
+                }
+            });
+            return count > 0 ? parseFloat((sum / count).toFixed(2)) : 0.0;
+        }
+        return 0.0;
+    });
 
     const matchedProducts = sortedData.map(item => {
         if (!item.created_at) return null;
@@ -957,7 +1594,6 @@ function renderTrendChart() {
         trendChartInstance.destroy();
     }
 
-    // Default empty chart helper
     if (sortedData.length === 0) {
         trendChartInstance = new Chart(ctx, {
             type: 'line',
@@ -974,14 +1610,13 @@ function renderTrendChart() {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
-                    y: { min: 0, max: 15 }
+                    y: { min: 0, max: 1000 }
                 }
             }
         });
         return;
     }
 
-    // Custom plugin to draw vertical lines for product applications
     const appLinesPlugin = {
         id: 'appLines',
         afterDatasetsDraw(chart) {
@@ -997,7 +1632,6 @@ function renderTrendChart() {
                 if (product) {
                     const point = meta.data[index];
                     if (point) {
-                        // Draw vertical line
                         ctx.beginPath();
                         ctx.strokeStyle = '#ffb300';
                         ctx.lineWidth = 1.2;
@@ -1006,13 +1640,11 @@ function renderTrendChart() {
                         ctx.lineTo(point.x, y.bottom);
                         ctx.stroke();
                         
-                        // Draw small indicator circle at the top of the line
                         ctx.fillStyle = '#ffb300';
                         ctx.beginPath();
                         ctx.arc(point.x, y.top + 8, 4, 0, 2 * Math.PI);
                         ctx.fill();
                         
-                        // Draw product label text rotated or horizontal
                         ctx.fillStyle = '#ffb300';
                         ctx.font = 'bold 9px sans-serif';
                         ctx.textAlign = 'left';
@@ -1024,13 +1656,16 @@ function renderTrendChart() {
         }
     };
 
+    const validValues = values.filter(v => typeof v === 'number' && !isNaN(v));
+    const maxSB = validValues.length > 0 ? Math.max(...validValues) : 0;
+
     trendChartInstance = new Chart(ctx, {
         type: 'line',
         data: {
             labels: labels,
             datasets: [
                 {
-                    label: 'Suma Bruta Promedio',
+                    label: 'Suma Bruta V2',
                     data: values,
                     borderColor: '#00f2ff',
                     backgroundColor: 'rgba(0, 242, 255, 0.05)',
@@ -1044,24 +1679,53 @@ function renderTrendChart() {
                     yAxisID: 'y'
                 },
                 {
-                    label: 'Emisión Foliar (Brun)',
+                    label: 'Hojas Totales (HT)',
+                    data: htValues,
+                    borderColor: '#b080ff',
+                    backgroundColor: 'rgba(176, 128, 255, 0.08)',
+                    borderWidth: 3,
+                    fill: true,
+                    tension: 0.3,
+                    pointBackgroundColor: '#b080ff',
+                    pointBorderColor: '#fff',
+                    pointRadius: 5,
+                    yAxisID: 'y1'
+                },
+                {
+                    label: 'Hoja Vieja Libre (H+VLE)',
+                    data: hvleValues,
+                    borderColor: '#ff80df',
+                    backgroundColor: 'rgba(255, 128, 223, 0.15)',
+                    borderWidth: 3,
+                    fill: true,
+                    tension: 0.3,
+                    pointBackgroundColor: '#ff80df',
+                    pointBorderColor: '#fff',
+                    pointRadius: 5,
+                    yAxisID: 'y1'
+                },
+                {
+                    label: 'Desarrollo Candela Promedio',
                     data: candelaValues,
                     borderColor: '#00ffaa',
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [5, 5],
+                    backgroundColor: 'rgba(0, 255, 170, 0.08)',
+                    borderWidth: 3,
                     fill: false,
                     tension: 0.3,
                     pointBackgroundColor: '#00ffaa',
                     pointBorderColor: '#fff',
-                    pointRadius: 4,
-                    yAxisID: 'y1'
+                    pointRadius: 5,
+                    yAxisID: 'y2'
                 }
             ]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
             plugins: {
                 legend: {
                     display: true,
@@ -1075,6 +1739,21 @@ function renderTrendChart() {
                 },
                 tooltip: {
                     callbacks: {
+                        title: function(context) {
+                            // Recover original precise date for tooltip title
+                            const dataIndex = context[0].dataIndex;
+                            const item = sortedData[dataIndex];
+                            if (item && item.created_at) {
+                                const d = new Date(item.created_at);
+                                const day = String(d.getDate()).padStart(2, '0');
+                                const month = String(d.getMonth() + 1).padStart(2, '0');
+                                const year = d.getFullYear();
+                                const hours = String(d.getHours()).padStart(2, '0');
+                                const minutes = String(d.getMinutes()).padStart(2, '0');
+                                return `${day}/${month}/${year} ${hours}:${minutes} (${item.lote})`;
+                            }
+                            return context[0].label;
+                        },
                         afterBody: function(context) {
                             const index = context[0].dataIndex;
                             const chart = context[0].chart;
@@ -1087,22 +1766,34 @@ function renderTrendChart() {
                     }
                 }
             },
+            onHover: (event, chartElements) => {
+                if (chartElements && chartElements.length > 0) {
+                    const dataIndex = chartElements[0].index;
+                    // sortedData is [...historyData].reverse(), so the index mapping from chart to historyData is:
+                    const historyIndex = historyData.length - 1 - dataIndex;
+                    if (historyData[historyIndex]) {
+                        updateReferenceTableForIndex(historyIndex);
+                    }
+                }
+            },
             scales: {
                 y: {
                     type: 'linear',
                     display: true,
                     position: 'left',
                     min: 0,
-                    max: Math.max(12, Math.max(...values) + 2),
+                    max: Math.max(1200, maxSB + 200),
                     grid: {
                         color: 'rgba(255, 255, 255, 0.05)'
                     },
                     ticks: {
-                        color: '#80809b'
+                        color: '#00f2ff',
+                        stepSize: 100,
+                        autoSkip: false
                     },
                     title: {
                         display: true,
-                        text: 'Suma Bruta',
+                        text: 'Suma Bruta Lote',
                         color: '#00f2ff',
                         font: { size: 10, weight: 'bold' }
                     }
@@ -1112,16 +1803,35 @@ function renderTrendChart() {
                     display: true,
                     position: 'right',
                     min: 0.0,
-                    max: 1.2,
+                    max: 20.0,
                     grid: {
                         drawOnChartArea: false
                     },
                     ticks: {
-                        color: '#80809b'
+                        color: '#b080ff'
                     },
                     title: {
                         display: true,
-                        text: 'Cigarro (Brun)',
+                        text: 'Hojas Promedio',
+                        color: '#b080ff',
+                        font: { size: 10, weight: 'bold' }
+                    }
+                },
+                y2: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    min: 0.0,
+                    max: 1.0,
+                    grid: {
+                        drawOnChartArea: false
+                    },
+                    ticks: {
+                        color: '#00ffaa'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Desarrollo Candela',
                         color: '#00ffaa',
                         font: { size: 10, weight: 'bold' }
                     }
@@ -1143,6 +1853,494 @@ function renderTrendChart() {
     });
 }
 
+// Render trend chart of Sanidad RP
+function renderSanidadTrendChart() {
+    const trendCanvas = document.getElementById("sanidad-trend-chart");
+    if (!trendCanvas) return;
+    const ctx = trendCanvas.getContext("2d");
+    
+    const sortedData = [...historyData].reverse();
+
+    const labels = sortedData.map(item => {
+        const d = new Date(item.created_at);
+        // Calculate ISO Week Number
+        const tempDate = new Date(d.valueOf());
+        const dayNum = (d.getDay() + 6) % 7;
+        tempDate.setDate(tempDate.getDate() - dayNum + 3);
+        const firstThursday = tempDate.valueOf();
+        tempDate.setMonth(0, 1);
+        if (tempDate.getDay() !== 4) {
+            tempDate.setMonth(0, 1 + ((4 - tempDate.getDay()) + 7) % 7);
+        }
+        const weekNum = 1 + Math.ceil((firstThursday - tempDate) / 604800000);
+        return `Sem. ${weekNum} (${item.lote})`;
+    });
+
+    const htValues = sortedData.map(item => item.parida_ht_promedio !== undefined ? item.parida_ht_promedio : 0.0);
+    const hvleValues = sortedData.map(item => item.parida_hvle_promedio !== undefined ? item.parida_hvle_promedio : 0.0);
+    const hvlqLowValues = sortedData.map(item => item.parida_hvlq_bajo_promedio !== undefined ? item.parida_hvlq_bajo_promedio : 0.0);
+    const hvlqHighValues = sortedData.map(item => item.parida_hvlq_alto_promedio !== undefined ? item.parida_hvlq_alto_promedio : 0.0);
+    const hvlcValues = sortedData.map(item => item.parida_hvlc_promedio !== undefined ? item.parida_hvlc_promedio : 0.0);
+
+    if (sanidadChartInstance) {
+        sanidadChartInstance.destroy();
+    }
+
+    if (sortedData.length === 0) {
+        sanidadChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: ['Sin Datos'],
+                datasets: [{
+                    label: 'Sanidad RP',
+                    data: [0],
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { min: 0, max: 20 }
+                }
+            }
+        });
+        return;
+    }
+
+    sanidadChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'HT RP',
+                    data: htValues,
+                    borderColor: '#00f2ff',
+                    backgroundColor: 'rgba(0, 242, 255, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLE RP',
+                    data: hvleValues,
+                    borderColor: '#b080ff',
+                    backgroundColor: 'rgba(176, 128, 255, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLQ <5% RP',
+                    data: hvlqLowValues,
+                    borderColor: '#ffb300',
+                    backgroundColor: 'rgba(255, 179, 0, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLQ >5% RP',
+                    data: hvlqHighValues,
+                    borderColor: '#ff4d4d',
+                    backgroundColor: 'rgba(255, 77, 77, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLC RP',
+                    data: hvlcValues,
+                    borderColor: '#00ffaa',
+                    backgroundColor: 'rgba(0, 255, 170, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    labels: {
+                        color: '#80809b',
+                        boxWidth: 8,
+                        font: { size: 9 }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    type: 'linear',
+                    display: true,
+                    min: 0,
+                    max: 20,
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.05)'
+                    },
+                    ticks: {
+                        color: '#80809b'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Promedio Hojas RP',
+                        color: '#80809b',
+                        font: { size: 10, weight: 'bold' }
+                    }
+                },
+                x: {
+                    grid: {
+                        display: false
+                    },
+                    ticks: {
+                        color: '#80809b',
+                        font: { size: 10 }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Render trend chart of Sanidad S7
+function renderSanidadS7TrendChart() {
+    const trendCanvas = document.getElementById("sanidad-s7-trend-chart");
+    if (!trendCanvas) return;
+    const ctx = trendCanvas.getContext("2d");
+    
+    const sortedData = [...historyData].reverse();
+
+    const labels = sortedData.map(item => {
+        const d = new Date(item.created_at);
+        // Calculate ISO Week Number
+        const tempDate = new Date(d.valueOf());
+        const dayNum = (d.getDay() + 6) % 7;
+        tempDate.setDate(tempDate.getDate() - dayNum + 3);
+        const firstThursday = tempDate.valueOf();
+        tempDate.setMonth(0, 1);
+        if (tempDate.getDay() !== 4) {
+            tempDate.setMonth(0, 1 + ((4 - tempDate.getDay()) + 7) % 7);
+        }
+        const weekNum = 1 + Math.ceil((firstThursday - tempDate) / 604800000);
+        return `Sem. ${weekNum} (${item.lote})`;
+    });
+
+    const htValues = sortedData.map(item => item.s7_ht_promedio !== undefined ? item.s7_ht_promedio : 0.0);
+    const hvleValues = sortedData.map(item => item.s7_hvle_promedio !== undefined ? item.s7_hvle_promedio : 0.0);
+    const hvlqLowValues = sortedData.map(item => item.s7_hvlq_bajo_promedio !== undefined ? item.s7_hvlq_bajo_promedio : 0.0);
+    const hvlqHighValues = sortedData.map(item => item.s7_hvlq_alto_promedio !== undefined ? item.s7_hvlq_alto_promedio : 0.0);
+    const hvlcValues = sortedData.map(item => item.s7_hvlc_promedio !== undefined ? item.s7_hvlc_promedio : 0.0);
+
+    if (sanidadS7ChartInstance) {
+        sanidadS7ChartInstance.destroy();
+    }
+
+    if (sortedData.length === 0) {
+        sanidadS7ChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: ['Sin Datos'],
+                datasets: [{
+                    label: 'Sanidad S7',
+                    data: [0],
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { min: 0, max: 20 }
+                }
+            }
+        });
+        return;
+    }
+
+    sanidadS7ChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'HT S7',
+                    data: htValues,
+                    borderColor: '#00f2ff',
+                    backgroundColor: 'rgba(0, 242, 255, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLE S7',
+                    data: hvleValues,
+                    borderColor: '#b080ff',
+                    backgroundColor: 'rgba(176, 128, 255, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLQ <5% S7',
+                    data: hvlqLowValues,
+                    borderColor: '#ffb300',
+                    backgroundColor: 'rgba(255, 179, 0, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLQ >5% S7',
+                    data: hvlqHighValues,
+                    borderColor: '#ff4d4d',
+                    backgroundColor: 'rgba(255, 77, 77, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLC S7',
+                    data: hvlcValues,
+                    borderColor: '#00ffaa',
+                    backgroundColor: 'rgba(0, 255, 170, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    labels: {
+                        color: '#80809b',
+                        boxWidth: 8,
+                        font: { size: 9 }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    type: 'linear',
+                    display: true,
+                    min: 0,
+                    max: 20,
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.05)'
+                    },
+                    ticks: {
+                        color: '#80809b'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Promedio Hojas S7',
+                        color: '#80809b',
+                        font: { size: 10, weight: 'bold' }
+                    }
+                },
+                x: {
+                    grid: {
+                        display: false
+                    },
+                    ticks: {
+                        color: '#80809b',
+                        font: { size: 10 }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Render trend chart of Sanidad S11
+function renderSanidadS11TrendChart() {
+    const trendCanvas = document.getElementById("sanidad-s11-trend-chart");
+    if (!trendCanvas) return;
+    const ctx = trendCanvas.getContext("2d");
+    
+    const sortedData = [...historyData].reverse();
+
+    const labels = sortedData.map(item => {
+        const d = new Date(item.created_at);
+        const tempDate = new Date(d.valueOf());
+        const dayNum = (d.getDay() + 6) % 7;
+        tempDate.setDate(tempDate.getDate() - dayNum + 3);
+        const firstThursday = tempDate.valueOf();
+        tempDate.setMonth(0, 1);
+        if (tempDate.getDay() !== 4) {
+            tempDate.setMonth(0, 1 + ((4 - tempDate.getDay()) + 7) % 7);
+        }
+        const weekNum = 1 + Math.ceil((firstThursday - tempDate) / 604800000);
+        return `Sem. ${weekNum} (${item.lote})`;
+    });
+
+    const htValues = sortedData.map(item => item.s11_ht_promedio !== undefined ? item.s11_ht_promedio : 0.0);
+    const hvleValues = sortedData.map(item => item.s11_hvle_promedio !== undefined ? item.s11_hvle_promedio : 0.0);
+    const hvlqLowValues = sortedData.map(item => item.s11_hvlq_bajo_promedio !== undefined ? item.s11_hvlq_bajo_promedio : 0.0);
+    const hvlqHighValues = sortedData.map(item => item.s11_hvlq_alto_promedio !== undefined ? item.s11_hvlq_alto_promedio : 0.0);
+    const hvlcValues = sortedData.map(item => item.s11_hvlc_promedio !== undefined ? item.s11_hvlc_promedio : 0.0);
+
+    if (sanidadS11ChartInstance) {
+        sanidadS11ChartInstance.destroy();
+    }
+
+    if (sortedData.length === 0) {
+        sanidadS11ChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: ['Sin Datos'],
+                datasets: [{
+                    label: 'Sanidad S11',
+                    data: [0],
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { min: 0, max: 20 }
+                }
+            }
+        });
+        return;
+    }
+
+    sanidadS11ChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'HT S11',
+                    data: htValues,
+                    borderColor: '#00f2ff',
+                    backgroundColor: 'rgba(0, 242, 255, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLE S11',
+                    data: hvleValues,
+                    borderColor: '#b080ff',
+                    backgroundColor: 'rgba(176, 128, 255, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLQ <5% S11',
+                    data: hvlqLowValues,
+                    borderColor: '#ffb300',
+                    backgroundColor: 'rgba(255, 179, 0, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLQ >5% S11',
+                    data: hvlqHighValues,
+                    borderColor: '#ff4d4d',
+                    backgroundColor: 'rgba(255, 77, 77, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                },
+                {
+                    label: 'H+VLC S11',
+                    data: hvlcValues,
+                    borderColor: '#00ffaa',
+                    backgroundColor: 'rgba(0, 255, 170, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    fill: false
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    labels: {
+                        color: '#80809b',
+                        boxWidth: 8,
+                        font: { size: 9 }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    type: 'linear',
+                    display: true,
+                    min: 0,
+                    max: 20,
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.05)'
+                    },
+                    ticks: {
+                        color: '#80809b'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Promedio Hojas S11',
+                        color: '#80809b',
+                        font: { size: 10, weight: 'bold' }
+                    }
+                },
+                x: {
+                    grid: {
+                        display: false
+                    },
+                    ticks: {
+                        color: '#80809b',
+                        font: { size: 10 }
+                    }
+                }
+            }
+        }
+    });
+}
+
 // Manual Sync trigger
 function triggerManualSync() {
     if (!isOnline) {
@@ -1160,6 +2358,8 @@ function triggerManualSync() {
 }
 
 // Synchronization loop with Supabase
+// Tabla 1: rafiqui_suma_bruta → Solo datos de Suma Bruta
+// Tabla 2: rafiqui_sanidad_foliar → Sanidad RP, S7, S11 (con columna etapa)
 async function autoSyncUnsynced(showUserAlerts = false) {
     if (!isOnline) return;
 
@@ -1176,7 +2376,10 @@ async function autoSyncUnsynced(showUserAlerts = false) {
     
     for (let item of unsyncedItems) {
         try {
-            const dataToInsert = {
+            let allOk = true;
+
+            // ── INSERT 1: Suma Bruta (tabla propia, limpia) ──
+            const sbData = {
                 station_id: item.station_id,
                 finca: item.finca,
                 lote: item.lote,
@@ -1187,31 +2390,687 @@ async function autoSyncUnsynced(showUserAlerts = false) {
                 created_at: item.created_at
             };
 
-            // Insert into Supabase table 'rafiqui_suma_bruta'
-            const { error } = await supabaseClient.from("rafiqui_suma_bruta").insert(dataToInsert);
-            
-            if (!error) {
+            const { error: sbError } = await supabaseClient.from("rafiqui_suma_bruta").insert(sbData);
+            if (sbError) {
+                console.error("Supabase insert error (suma_bruta):", sbError);
+                allOk = false;
+            }
+
+            // ── INSERT 2: Sanidad Recién Parida (etapa RP) ──
+            if (allOk && item.parida_ht_promedio && item.parida_ht_promedio > 0) {
+                const rpData = {
+                    station_id: item.station_id,
+                    finca: item.finca,
+                    lote: item.lote,
+                    evaluador: item.evaluador,
+                    etapa: "RP",
+                    ht_promedio: item.parida_ht_promedio,
+                    hvle_promedio: item.parida_hvle_promedio,
+                    hvlq_bajo_promedio: item.parida_hvlq_bajo_promedio,
+                    hvlq_alto_promedio: item.parida_hvlq_alto_promedio,
+                    hvlc_promedio: item.parida_hvlc_promedio,
+                    detalles_json: item.parida_detalles_json || {},
+                    created_at: item.created_at
+                };
+                const { error: rpError } = await supabaseClient.from("rafiqui_sanidad_foliar").insert(rpData);
+                if (rpError) {
+                    console.error("Supabase insert error (sanidad RP):", rpError);
+                    allOk = false;
+                }
+            }
+
+            // ── INSERT 3: Sanidad Semana 7 (etapa S7) ──
+            if (allOk && item.s7_ht_promedio && item.s7_ht_promedio > 0) {
+                const s7Data = {
+                    station_id: item.station_id,
+                    finca: item.finca,
+                    lote: item.lote,
+                    evaluador: item.evaluador,
+                    etapa: "S7",
+                    ht_promedio: item.s7_ht_promedio,
+                    hvle_promedio: item.s7_hvle_promedio,
+                    hvlq_bajo_promedio: item.s7_hvlq_bajo_promedio,
+                    hvlq_alto_promedio: item.s7_hvlq_alto_promedio,
+                    hvlc_promedio: item.s7_hvlc_promedio,
+                    detalles_json: item.s7_detalles_json || {},
+                    created_at: item.created_at
+                };
+                const { error: s7Error } = await supabaseClient.from("rafiqui_sanidad_foliar").insert(s7Data);
+                if (s7Error) {
+                    console.error("Supabase insert error (sanidad S7):", s7Error);
+                    allOk = false;
+                }
+            }
+
+            // ── INSERT 4: Sanidad Semana 11 (etapa S11) ──
+            if (allOk && item.s11_ht_promedio && item.s11_ht_promedio > 0) {
+                const s11Data = {
+                    station_id: item.station_id,
+                    finca: item.finca,
+                    lote: item.lote,
+                    evaluador: item.evaluador,
+                    etapa: "S11",
+                    ht_promedio: item.s11_ht_promedio,
+                    hvle_promedio: item.s11_hvle_promedio,
+                    hvlq_bajo_promedio: item.s11_hvlq_bajo_promedio,
+                    hvlq_alto_promedio: item.s11_hvlq_alto_promedio,
+                    hvlc_promedio: item.s11_hvlc_promedio,
+                    detalles_json: item.s11_detalles_json || {},
+                    created_at: item.created_at
+                };
+                const { error: s11Error } = await supabaseClient.from("rafiqui_sanidad_foliar").insert(s11Data);
+                if (s11Error) {
+                    console.error("Supabase insert error (sanidad S11):", s11Error);
+                    allOk = false;
+                }
+            }
+
+            // Solo marcar como sincronizado si todo salió bien
+            if (allOk) {
                 item.synced = true;
                 successCount++;
-            } else {
-                console.error("Supabase insert error:", error);
             }
         } catch (e) {
             console.error("Sync catch error:", e);
         }
     }
 
-    // Save updated sync statuses locally
     saveHistoryToLocalStorage();
     updateNetworkStatus();
     badge.style.opacity = "1.0";
 
-    // Refresh history view if active
     if (document.getElementById("view-historial").classList.contains("active")) {
         renderHistoryList();
     }
 
     if (successCount > 0 && showUserAlerts) {
         alert(`¡Sincronización completa! Se subieron ${successCount} registros a la nube.`);
+    }
+}
+
+// ── EXPORT AND SHARE FUNCTIONS ──
+
+// Downloads a chart as a PNG image
+function downloadChartAsImage(canvasId, filename) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    
+    try {
+        const imageURI = canvas.toDataURL("image/png");
+        const link = document.createElement("a");
+        link.download = `${filename}_${Date.now()}.png`;
+        link.href = imageURI;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    } catch (err) {
+        console.error("Error al descargar la imagen del gráfico:", err);
+        alert("No se pudo descargar la imagen en este navegador.");
+    }
+}
+
+// Shares a chart as a PNG image via native share (WhatsApp, etc.)
+async function shareChartAsImage(canvasId, filename) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    
+    try {
+        canvas.toBlob(async (blob) => {
+            if (!blob) {
+                downloadChartAsImage(canvasId, filename);
+                return;
+            }
+            const file = new File([blob], `${filename}.png`, { type: "image/png" });
+            
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                await navigator.share({
+                    files: [file],
+                    title: `Gráfico ${filename}`,
+                    text: `Comparto la gráfica de campo de Rafiqui.`
+                });
+            } else {
+                downloadChartAsImage(canvasId, filename);
+                alert("La compartición directa no está disponible. El gráfico se ha descargado a tu dispositivo.");
+            }
+        }, "image/png");
+    } catch (err) {
+        console.error("Error al compartir imagen:", err);
+        downloadChartAsImage(canvasId, filename);
+    }
+}
+
+// Generates a professional PDF Report with metadata, KPIs, charts, and calculations table
+async function generatePDFReport() {
+    const finca = document.getElementById("input-finca").value || "Sin Finca";
+    const lote = document.getElementById("input-lote").value || "Sin Lote";
+    const evaluador = document.getElementById("input-evaluador").value || "Sin Evaluador";
+    const reportDate = new Date().toLocaleDateString("es-ES", {
+        year: 'numeric', month: 'long', day: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+    });
+
+    const avgSB = document.getElementById("avg-sb-value").innerText || "0.0";
+    const leavesText = document.getElementById("leaves-average-text").innerText || "";
+    
+    let avgHT = "0.0";
+    let avgHvle = "0.0";
+    let avgCandela = "0.00";
+    
+    if (leavesText.includes("Hojas Prom:")) {
+        const parts = leavesText.split("|");
+        avgHT = parts[0].replace("Hojas Prom:", "").trim();
+        avgHvle = parts[1].replace("H+VLE Prom:", "").trim();
+        avgCandela = parts[2].replace("Candela Prom:", "").trim();
+    }
+
+    let trendImg = "", rpImg = "", s7Img = "", s11Img = "";
+    try {
+        const trendCanvas = document.getElementById("trend-chart");
+        if (trendCanvas) trendImg = trendCanvas.toDataURL("image/png");
+        
+        const rpCanvas = document.getElementById("sanidad-trend-chart");
+        if (rpCanvas) rpImg = rpCanvas.toDataURL("image/png");
+        
+        const s7Canvas = document.getElementById("sanidad-s7-trend-chart");
+        if (s7Canvas) s7Img = s7Canvas.toDataURL("image/png");
+        
+        const s11Canvas = document.getElementById("sanidad-s11-trend-chart");
+        if (s11Canvas) s11Img = s11Canvas.toDataURL("image/png");
+    } catch (err) {
+        console.error("Error al convertir gráficos a imágenes:", err);
+    }
+
+    const referenceTable = document.getElementById("calc-reference-table-body");
+    let tableRowsHTML = "";
+    if (referenceTable && referenceTable.children.length > 0) {
+        const rows = referenceTable.children;
+        for (let r of rows) {
+            const cells = r.children;
+            if (cells.length === 7) {
+                tableRowsHTML += `
+                    <tr style="border-bottom: 1px solid #dee2e6;">
+                        <td style="padding: 8px; border: 1px solid #dee2e6; font-weight: bold; background: #fdfdfd;">${cells[0].innerText}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6;">${cells[1].innerText}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6;">${cells[2].innerText}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6;">${cells[3].innerText}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6;">${cells[4].innerText}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6;">${cells[5].innerText}</td>
+                        <td style="padding: 8px; border: 1px solid #dee2e6;">${cells[6].innerText}</td>
+                    </tr>
+                `;
+            }
+        }
+    } else {
+        tableRowsHTML = `<tr><td colspan="7" style="padding: 12px; color: #888;">No hay muestreos recientes cargados en la tabla de cálculos.</td></tr>`;
+    }
+
+    // Create a 1x1 hidden wrapper that stays inside the DOM visible coordinates to prevent blank rendering in html2canvas
+    const pdfWrapper = document.createElement("div");
+    pdfWrapper.id = "pdf-wrapper-container";
+    pdfWrapper.style.position = "fixed";
+    pdfWrapper.style.left = "0";
+    pdfWrapper.style.top = "0";
+    pdfWrapper.style.width = "1px";
+    pdfWrapper.style.height = "1px";
+    pdfWrapper.style.overflow = "hidden";
+    pdfWrapper.style.zIndex = "-9999";
+    pdfWrapper.style.pointerEvents = "none";
+
+    const reportContainer = document.createElement("div");
+    reportContainer.id = "pdf-report-container";
+    reportContainer.style.width = "750px";
+    reportContainer.style.background = "#ffffff";
+    reportContainer.style.color = "#212529";
+    reportContainer.style.position = "relative";
+    reportContainer.style.left = "0";
+    reportContainer.style.top = "0";
+
+    reportContainer.innerHTML = `
+        <div style="padding: 30px; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #212529; background: #ffffff; line-height: 1.5;">
+            <div style="border-bottom: 3px solid #00f2ff; padding-bottom: 15px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h1 style="margin: 0; font-size: 1.8rem; color: #0b0b1a; font-weight: 800; letter-spacing: -0.5px;">RAFIQUI <span style="color: #00bcd4;">PRO</span></h1>
+                    <p style="margin: 3px 0 0 0; font-size: 0.82rem; color: #6c757d;">Sistema Inteligente de Monitoreo de Sigatoka Negra</p>
+                </div>
+                <div style="text-align: right;">
+                    <span style="font-size: 0.85rem; font-weight: 700; background: #e0f7fa; color: #006064; padding: 6px 12px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.5px;">Reporte Ejecutivo</span>
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 25px; background: #f8f9fa; padding: 15px; border-radius: 10px; font-size: 0.92rem; border: 1px solid #e9ecef;">
+                <div><strong>🚜 Finca:</strong> ${finca}</div>
+                <div><strong>📍 Lote:</strong> ${lote}</div>
+                <div><strong>👨‍🌾 Evaluador:</strong> ${evaluador}</div>
+                <div><strong>📅 Generación:</strong> ${reportDate}</div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 30px; text-align: center;">
+                <div style="background: #e0f7fa; padding: 12px; border-radius: 8px; border: 1px solid #b2ebf2; box-shadow: 0 2px 4px rgba(0,96,100,0.04);">
+                    <div style="font-size: 0.72rem; color: #006064; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Suma Bruta Prom</div>
+                    <div style="font-size: 1.5rem; font-weight: 800; color: #006064; margin-top: 5px;">${avgSB}</div>
+                </div>
+                <div style="background: #f3e5f5; padding: 12px; border-radius: 8px; border: 1px solid #e1bee7; box-shadow: 0 2px 4px rgba(74,20,140,0.04);">
+                    <div style="font-size: 0.72rem; color: #4a148c; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Hojas Prom</div>
+                    <div style="font-size: 1.5rem; font-weight: 800; color: #4a148c; margin-top: 5px;">${avgHT}</div>
+                </div>
+                <div style="background: #fce4ec; padding: 12px; border-radius: 8px; border: 1px solid #f8bbd0; box-shadow: 0 2px 4px rgba(136,14,79,0.04);">
+                    <div style="font-size: 0.72rem; color: #880e4f; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">H+VLE Prom</div>
+                    <div style="font-size: 1.5rem; font-weight: 800; color: #880e4f; margin-top: 5px;">${avgHvle}</div>
+                </div>
+                <div style="background: #e8f5e9; padding: 12px; border-radius: 8px; border: 1px solid #c8e6c9; box-shadow: 0 2px 4px rgba(27,94,32,0.04);">
+                    <div style="font-size: 0.72rem; color: #1b5e20; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Candela Prom</div>
+                    <div style="font-size: 1.5rem; font-weight: 800; color: #1b5e20; margin-top: 5px;">${avgCandela}</div>
+                </div>
+            </div>
+            
+            <h2 style="font-size: 1.15rem; border-bottom: 2px solid #e9ecef; padding-bottom: 6px; margin-bottom: 15px; color: #343a40; font-weight: 700;">Gráficas de Tendencia Histórica</h2>
+            
+            <div style="display: flex; flex-direction: column; gap: 25px;">
+                ${trendImg ? `
+                <div style="border: 1px solid #dee2e6; padding: 15px; border-radius: 8px; background: #fafafa;">
+                    <div style="font-size: 0.85rem; font-weight: 700; color: #495057; margin-bottom: 10px;">📊 1. Evolución de la Suma Bruta y Hojas en el Lote</div>
+                    <img src="${trendImg}" style="width: 100%; height: auto; max-height: 280px; display: block; margin: 0 auto; border-radius: 4px;" />
+                </div>
+                ` : ''}
+
+                ${rpImg ? `
+                <div style="border: 1px solid #dee2e6; padding: 15px; border-radius: 8px; background: #fafafa; page-break-before: always;">
+                    <div style="font-size: 0.85rem; font-weight: 700; color: #495057; margin-bottom: 10px;">📊 2. Evolución de la Sanidad Foliar (Recién Parida)</div>
+                    <img src="${rpImg}" style="width: 100%; height: auto; max-height: 240px; display: block; margin: 0 auto; border-radius: 4px;" />
+                </div>
+                ` : ''}
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    ${s7Img ? `
+                    <div style="border: 1px solid #dee2e6; padding: 10px; border-radius: 8px; background: #fafafa;">
+                        <div style="font-size: 0.78rem; font-weight: 700; color: #495057; margin-bottom: 8px;">📊 3. Sanidad Semana 7</div>
+                        <img src="${s7Img}" style="width: 100%; height: auto; max-height: 180px; display: block; margin: 0 auto; border-radius: 4px;" />
+                    </div>
+                    ` : ''}
+                    
+                    ${s11Img ? `
+                    <div style="border: 1px solid #dee2e6; padding: 10px; border-radius: 8px; background: #fafafa;">
+                        <div style="font-size: 0.78rem; font-weight: 700; color: #495057; margin-bottom: 8px;">📊 4. Sanidad Semana 11</div>
+                        <img src="${s11Img}" style="width: 100%; height: auto; max-height: 180px; display: block; margin: 0 auto; border-radius: 4px;" />
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+
+            <h2 style="font-size: 1.15rem; border-bottom: 2px solid #e9ecef; padding-bottom: 6px; margin-top: 30px; margin-bottom: 15px; color: #343a40; font-weight: 700; page-break-before: always;">Detalle de Cálculos por Planta (Lote Activo)</h2>
+            
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.82rem; text-align: center; border: 1px solid #dee2e6;">
+                <thead>
+                    <tr style="background: #f1f3f5; font-weight: bold; border-bottom: 2px solid #dee2e6; color: #495057;">
+                        <th style="padding: 10px; border: 1px solid #dee2e6;">Planta</th>
+                        <th style="padding: 10px; border: 1px solid #dee2e6;">EE</th>
+                        <th style="padding: 10px; border: 1px solid #dee2e6;">COE</th>
+                        <th style="padding: 10px; border: 1px solid #dee2e6;">Candela</th>
+                        <th style="padding: 10px; border: 1px solid #dee2e6;">COE-Candela</th>
+                        <th style="padding: 10px; border: 1px solid #dee2e6;">HT</th>
+                        <th style="padding: 10px; border: 1px solid #dee2e6;">H+VLE</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${tableRowsHTML}
+                </tbody>
+            </table>
+            
+            <div style="margin-top: 40px; text-align: center; font-size: 0.75rem; color: #868e96; border-top: 1px solid #e9ecef; padding-top: 15px;">
+                Este reporte técnico fue generado electrónicamente desde la aplicación móvil de <strong>Rafiqui Pro</strong>.
+            </div>
+        </div>
+    `;
+
+    pdfWrapper.appendChild(reportContainer);
+    document.body.appendChild(pdfWrapper);
+
+    const opt = {
+        margin:       [10, 10, 10, 10],
+        filename:     `Reporte_Suma_Bruta_${lote.replace(/\s+/g, '_')}_${Date.now()}.pdf`,
+        image:        { type: 'jpeg', quality: 0.98 },
+        html2canvas:  { scale: 2, useCORS: true, logging: false },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+
+    try {
+        const pdfWorker = html2pdf().from(reportContainer).set(opt);
+        
+        if (navigator.canShare && typeof File !== 'undefined') {
+            const pdfBlob = await pdfWorker.output('blob');
+            const file = new File([pdfBlob], opt.filename, { type: 'application/pdf' });
+            
+            if (navigator.canShare({ files: [file] })) {
+                await navigator.share({
+                    files: [file],
+                    title: `Reporte Muestreo Lote ${lote}`,
+                    text: `Comparto el reporte ejecutivo de monitoreo de Suma Bruta de la finca ${finca}.`
+                });
+            } else {
+                await pdfWorker.save();
+            }
+        } else {
+            await pdfWorker.save();
+        }
+    } catch (error) {
+        console.error("Error al generar o compartir el reporte PDF:", error);
+        alert("Ocurrió un error al generar el reporte PDF. Se disparará la descarga clásica.");
+        try {
+            await html2pdf().from(reportContainer).set(opt).save();
+        } catch (e) {
+            console.error("Fallback save failed too:", e);
+        }
+    } finally {
+        if (pdfWrapper.parentNode) {
+            document.body.removeChild(pdfWrapper);
+        }
+    }
+}
+
+// ── ROLE AND PASSWORD SECURITY FUNCTIONS ──
+
+async function handleRoleChange() {
+    const selectRole = document.getElementById("select-role");
+    if (!selectRole) return;
+    
+    const selectedRole = selectRole.value;
+    
+    if (selectedRole === "ingeniero") {
+        const storedPassword = localStorage.getItem("rafiqui_engineer_password") || "rafiqui2026";
+        const passwordInput = prompt("Introduce la contraseña de Supervisor:");
+        
+        if (passwordInput === null) {
+            // Cancelled
+            selectRole.value = "evaluador";
+            return;
+        }
+        
+        if (passwordInput !== storedPassword) {
+            alert("Contraseña incorrecta. Acceso denegado.");
+            selectRole.value = "evaluador";
+            return;
+        }
+        
+        // Correct password
+        localStorage.setItem("rafiqui_user_role", "ingeniero");
+        loadHistory();
+        
+        if (navigator.onLine) {
+            await fetchGlobalHistoryFromSupabase(true);
+        } else {
+            alert("Acceso concedido como Ingeniero (Modo Offline). Los datos se cargarán del celular hasta recuperar conexión.");
+            renderHistoryList();
+            renderTrendChart();
+            renderSanidadTrendChart();
+            renderSanidadS7TrendChart();
+            renderSanidadS11TrendChart();
+        }
+    } else {
+        localStorage.setItem("rafiqui_user_role", "evaluador");
+        loadHistory();
+        renderHistoryList();
+        renderTrendChart();
+        renderSanidadTrendChart();
+        renderSanidadS7TrendChart();
+        renderSanidadS11TrendChart();
+    }
+}
+
+function changeEngineerPassword() {
+    const storedPassword = localStorage.getItem("rafiqui_engineer_password") || "rafiqui2026";
+    const currentInput = prompt("Introduce la contraseña actual de Supervisor:");
+    
+    if (currentInput === null) return;
+    
+    if (currentInput !== storedPassword) {
+        alert("Contraseña actual incorrecta.");
+        return;
+    }
+    
+    const newPassword = prompt("Introduce la NUEVA contraseña de Supervisor:");
+    if (newPassword === null) return;
+    if (newPassword.trim() === "") {
+        alert("La contraseña no puede estar vacía.");
+        return;
+    }
+    
+    const confirmPassword = prompt("Confirma la nueva contraseña de Supervisor:");
+    if (confirmPassword === null) return;
+    
+    if (newPassword !== confirmPassword) {
+        alert("Las contraseñas no coinciden. Inténtalo de nuevo.");
+        return;
+    }
+    
+    localStorage.setItem("rafiqui_engineer_password", newPassword);
+    alert("¡Contraseña de Supervisor actualizada con éxito en este dispositivo!");
+}
+
+async function fetchGlobalHistoryFromSupabase(showFeedback = false) {
+    if (!navigator.onLine) {
+        if (showFeedback) alert("No tienes conexión a internet.");
+        return;
+    }
+    
+    const badge = document.getElementById("sync-status");
+    const text = document.getElementById("sync-status-text");
+    
+    if (badge && text) {
+        badge.style.opacity = "0.6";
+        text.innerText = "Descargando datos...";
+    }
+    
+    try {
+        const [sbResponse, sanidadResponse] = await Promise.all([
+            supabaseClient.from("rafiqui_suma_bruta").select("*").order("created_at", { ascending: false }).limit(100),
+            supabaseClient.from("rafiqui_sanidad_foliar").select("*").order("created_at", { ascending: false }).limit(300)
+        ]);
+        
+        if (sbResponse.error) {
+            console.error("Error al descargar Suma Bruta de Supabase:", sbResponse.error);
+            if (showFeedback) alert("Error al conectar con la base de datos.");
+            return;
+        }
+        
+        const sbRows = sbResponse.data || [];
+        const sanidadRows = sanidadResponse.data || [];
+        
+        const sanidadByCreatedAt = {};
+        sanidadRows.forEach(row => {
+            if (!row.created_at) return;
+            const ts = row.created_at;
+            if (!sanidadByCreatedAt[ts]) {
+                sanidadByCreatedAt[ts] = {};
+            }
+            const stage = row.etapa || "RP";
+            sanidadByCreatedAt[ts][stage] = row;
+        });
+        
+        const remoteHistory = sbRows.map(sb => {
+            const ts = sb.created_at;
+            const sanidadGroup = sanidadByCreatedAt[ts] || {};
+            
+            const rp = sanidadGroup["RP"];
+            const s7 = sanidadGroup["S7"];
+            const s11 = sanidadGroup["S11"];
+            
+            return {
+                id: "sb_" + new Date(ts).getTime(),
+                station_id: sb.station_id,
+                finca: sb.finca,
+                lote: sb.lote,
+                evaluador: sb.evaluador,
+                hojas_promedio: Number(sb.hojas_promedio || 0),
+                hvle_promedio: Number(sb.hvle_promedio || 0),
+                suma_bruta_promedio: Number(sb.suma_bruta_promedio || 0),
+                detalles_json: sb.detalles_json || { plants: [] },
+                created_at: ts,
+                synced: true,
+                parida_ht_promedio: rp ? Number(rp.ht_promedio || 0) : 0.0,
+                parida_hvle_promedio: rp ? Number(rp.hvle_promedio || 0) : 0.0,
+                parida_hvlq_bajo_promedio: rp ? Number(rp.hvlq_bajo_promedio || 0) : 0.0,
+                parida_hvlq_alto_promedio: rp ? Number(rp.hvlq_alto_promedio || 0) : 0.0,
+                parida_hvlc_promedio: rp ? Number(rp.hvlc_promedio || 0) : 0.0,
+                parida_detalles_json: rp ? rp.detalles_json : { plants: [] },
+                s7_ht_promedio: s7 ? Number(s7.ht_promedio || 0) : 0.0,
+                s7_hvle_promedio: s7 ? Number(s7.hvle_promedio || 0) : 0.0,
+                s7_hvlq_bajo_promedio: s7 ? Number(s7.hvlq_bajo_promedio || 0) : 0.0,
+                s7_hvlq_alto_promedio: s7 ? Number(s7.hvlq_alto_promedio || 0) : 0.0,
+                s7_hvlc_promedio: s7 ? Number(s7.hvlc_promedio || 0) : 0.0,
+                s7_detalles_json: s7 ? s7.detalles_json : { plants: [] },
+                s11_ht_promedio: s11 ? Number(s11.ht_promedio || 0) : 0.0,
+                s11_hvle_promedio: s11 ? Number(s11.hvle_promedio || 0) : 0.0,
+                s11_hvlq_bajo_promedio: s11 ? Number(s11.hvlq_bajo_promedio || 0) : 0.0,
+                s11_hvlq_alto_promedio: s11 ? Number(s11.hvlq_alto_promedio || 0) : 0.0,
+                s11_hvlc_promedio: s11 ? Number(s11.hvlc_promedio || 0) : 0.0,
+                s11_detalles_json: s11 ? s11.detalles_json : { plants: [] }
+            };
+        });
+        
+        globalHistoryData = remoteHistory;
+        
+        const localRaw = localStorage.getItem("rafiqui_suma_bruta_history");
+        const localHistory = localRaw ? JSON.parse(localRaw) : [];
+        const unsyncedLocal = localHistory.filter(item => !item.synced);
+        
+        const combined = [...unsyncedLocal];
+        globalHistoryData.forEach(rem => {
+            const alreadyExists = combined.some(loc => loc.created_at === rem.created_at);
+            if (!alreadyExists) {
+                combined.push(rem);
+            }
+        });
+        
+        combined.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        historyData = combined;
+        
+        populateEngineerFilters();
+        
+        renderHistoryList();
+        
+        if (document.getElementById("view-graficos").classList.contains("active")) {
+            renderTrendChart();
+            renderSanidadTrendChart();
+            renderSanidadS7TrendChart();
+            renderSanidadS11TrendChart();
+        }
+        
+        if (showFeedback) alert("¡Historial global de Supabase sincronizado con éxito!");
+    } catch (err) {
+        console.error("Catch error in fetchGlobalHistoryFromSupabase:", err);
+    } finally {
+        if (badge && text) {
+            badge.style.opacity = "1.0";
+            updateNetworkStatus();
+        }
+    }
+}
+
+function populateEngineerFilters() {
+    const fincas = new Set();
+    const lotes = new Set();
+    
+    historyData.forEach(item => {
+        if (item.finca) fincas.add(item.finca.trim());
+        if (item.lote) lotes.add(item.lote.trim());
+    });
+    
+    const histFinca = document.getElementById("hist-filter-finca");
+    const histLote = document.getElementById("hist-filter-lote");
+    const chartFinca = document.getElementById("chart-filter-finca");
+    const chartLote = document.getElementById("chart-filter-lote");
+    
+    const selectedFinca = histFinca ? histFinca.value : "all";
+    const selectedLote = histLote ? histLote.value : "all";
+    
+    const fillDropdown = (el, items, placeholder) => {
+        if (!el) return;
+        el.innerHTML = `<option value="all">${placeholder}</option>`;
+        items.forEach(item => {
+            el.innerHTML += `<option value="${item}">${item}</option>`;
+        });
+    };
+    
+    const sortedFincas = Array.from(fincas).sort();
+    const sortedLotes = Array.from(lotes).sort();
+    
+    fillDropdown(histFinca, sortedFincas, "Todas las Fincas");
+    fillDropdown(chartFinca, sortedFincas, "Todas las Fincas");
+    fillDropdown(histLote, sortedLotes, "Todos los Lotes");
+    fillDropdown(chartLote, sortedLotes, "Todos los Lotes");
+    
+    if (histFinca && sortedFincas.includes(selectedFinca)) {
+        histFinca.value = selectedFinca;
+        if (chartFinca) chartFinca.value = selectedFinca;
+    }
+    if (histLote && sortedLotes.includes(selectedLote)) {
+        histLote.value = selectedLote;
+        if (chartLote) chartLote.value = selectedLote;
+    }
+}
+
+function applyEngineerFilters(sourceTab) {
+    let selectedFinca = "all";
+    let selectedLote = "all";
+    
+    if (sourceTab === "hist") {
+        selectedFinca = document.getElementById("hist-filter-finca").value;
+        selectedLote = document.getElementById("hist-filter-lote").value;
+        
+        const chartFinca = document.getElementById("chart-filter-finca");
+        const chartLote = document.getElementById("chart-filter-lote");
+        if (chartFinca) chartFinca.value = selectedFinca;
+        if (chartLote) chartLote.value = selectedLote;
+    } else {
+        selectedFinca = document.getElementById("chart-filter-finca").value;
+        selectedLote = document.getElementById("chart-filter-lote").value;
+        
+        const histFinca = document.getElementById("hist-filter-finca");
+        const histLote = document.getElementById("hist-filter-lote");
+        if (histFinca) histFinca.value = selectedFinca;
+        if (histLote) histLote.value = selectedLote;
+    }
+    
+    const baseData = globalHistoryData && globalHistoryData.length > 0 ? [...globalHistoryData] : [];
+    
+    const localRaw = localStorage.getItem("rafiqui_suma_bruta_history");
+    const localHistory = localRaw ? JSON.parse(localRaw) : [];
+    const unsyncedLocal = localHistory.filter(item => !item.synced);
+    
+    const combined = [...unsyncedLocal];
+    baseData.forEach(rem => {
+        if (!combined.some(loc => loc.created_at === rem.created_at)) {
+            combined.push(rem);
+        }
+    });
+    combined.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    
+    let filtered = combined;
+    if (selectedFinca !== "all") {
+        filtered = filtered.filter(item => item.finca && item.finca.trim() === selectedFinca.trim());
+    }
+    if (selectedLote !== "all") {
+        filtered = filtered.filter(item => item.lote && item.lote.trim() === selectedLote.trim());
+    }
+    
+    historyData = filtered;
+    
+    renderHistoryList();
+    
+    renderTrendChart();
+    renderSanidadTrendChart();
+    renderSanidadS7TrendChart();
+    renderSanidadS11TrendChart();
+}
+
+async function deleteRecordFromSupabase(createdAt, stationId) {
+    try {
+        await Promise.all([
+            supabaseClient.from("rafiqui_suma_bruta").delete().eq("created_at", createdAt).eq("station_id", stationId),
+            supabaseClient.from("rafiqui_sanidad_foliar").delete().eq("created_at", createdAt).eq("station_id", stationId)
+        ]);
+        console.log("Registro eliminado de Supabase:", createdAt);
+    } catch (err) {
+        console.error("Error al eliminar de Supabase:", err);
     }
 }

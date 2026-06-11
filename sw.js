@@ -1,4 +1,4 @@
-const CACHE_NAME = 'suma-bruta-v3';
+const CACHE_NAME = 'suma-bruta-v19';
 const ASSETS = [
   './',
   './index.html',
@@ -11,10 +11,17 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', event => {
+  self.skipWaiting(); // Force active immediately
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => {
       return cache.addAll(ASSETS);
     })
+  );
+});
+
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    self.clients.claim() // Claim all client windows immediately
   );
 });
 
