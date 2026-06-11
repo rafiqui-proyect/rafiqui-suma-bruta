@@ -1599,6 +1599,9 @@ function renderTrendChart() {
         }
     };
 
+    const validValues = values.filter(v => typeof v === 'number' && !isNaN(v));
+    const maxSB = validValues.length > 0 ? Math.max(...validValues) : 0;
+
     trendChartInstance = new Chart(ctx, {
         type: 'line',
         data: {
@@ -1722,7 +1725,7 @@ function renderTrendChart() {
                     display: true,
                     position: 'left',
                     min: 0,
-                    max: Math.max(1200, Math.max(...values) + 200),
+                    max: Math.max(1200, maxSB + 200),
                     grid: {
                         color: 'rgba(255, 255, 255, 0.05)'
                     },

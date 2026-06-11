@@ -716,3 +716,11 @@ header {
     background: rgba(255, 77, 77, 0.15);
     opacity: 1;
 }
+
+/* Container to prevent Chart.js resize loop */
+.chart-container {
+    position: relative;
+    height: 260px;
+    width: 100%;
+}
+
